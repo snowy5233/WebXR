@@ -48,8 +48,9 @@ separate, clearly-documented bindings and never conflict.
 
 ```
 index.html   # Markup, overlay/fallback UI, Three.js import map, module bootstrap
-main.js      # Scene, lighting, controllers, ray-casting, WebXR session lifecycle
-style.css    # Overlay/fallback UI styling
+main.js      # Scene, lighting, controllers, ray-casting, locomotion,
+             # WebXR session lifecycle, and runtime diagnostics
+style.css    # Overlay/fallback UI + locomotion toggle styling
 README.md    # This file
 ```
 
@@ -103,7 +104,10 @@ Then in the Quest 3 browser, just navigate to that HTTPS URL and tap
 3. Put on the headset, open the **Meta Quest Browser** (or a Chromium-based
    browser), and navigate to that HTTPS URL.
 4. Tap **Enter VR**. Put the headset on; point a controller at the cube and
-   pull the trigger to cycle its color.
+   pull the trigger to cycle its color. To move around: in **teleport** mode
+   (the default), point a controller at the floor and press the **grip** button;
+   in **smooth** mode, push a thumbstick. Switch modes with the right
+   controller's **A/X** button (or the desktop toggle before entering VR).
 
 > A plain `http://<your-laptop-ip>:8000` URL will **not** work in the headset
 > because WebXR is only available in secure contexts. Use HTTPS or localhost.
@@ -113,12 +117,45 @@ Then in the Quest 3 browser, just navigate to that HTTPS URL and tap
 - Minimal draw calls: grid + floor + cube + a couple of lights + controller
   models. Shadows are disabled.
 - No textures are used in v1, so there is nothing large to compress yet. When
-  textures are added later, prefer small, compressed formats (e.g. KTX2/ BasisU) and reuse materials.
+  textures are added later, prefer small, compressed formats (e.g. KTX2/BasisU)
+  and reuse materials.
 - `renderer.setAnimationLoop` drives the loop, which Three.js binds to the
   XRSession vsync while in XR.
+
+## Debug overlay
+
+A small text panel (top-left of the flat page, also visible in-headset)
+ reports live per-frame state: `xr.enabled`, the resolved session features, the
+ active `locomotion` mode, the player offset, and each controller slot's grip/
+ ray world positions and attached model. It exists to diagnose XR lifecycle
+ issues (head tracking, controller poses, session start); leave it in place
+ unless you are sure a change is unrelated.
+
+## Known WebXR gotchas in this codebase
+
+A few non-obvious things that have already caused bugs here and are worth
+preserving:
+
+- **`renderer.xr.enabled = true` is required.** `WebXRManager.enabled` defaults
+  to `false`; without it `render()` keeps using the flat desktop camera even
+  while presenting, so head tracking does nothing and the view is locked ~3m
+  back. Set it before presenting (see `main.js`).
+- **Do not call `OrbitControls.update()` while presenting.** It is bound to the
+  same camera WebXRManager drives with the headset pose and would overwrite
+  that pose. It's gated on `!renderer.xr.isPresenting` in the render loop.
+- **Locomotion moves an offset reference space, not the camera.** The headset
+  pose is applied on top of whatever reference space `renderer.xr` resolves
+  against, so changing that space moves the player without fighting head
+  tracking.
 
 ## Iterating
 
 This scaffold is intentionally small. Planned next steps: physics, more
-interactive objects, and hand-tracking support (the session already requests
-`hand-tracking` as an optional feature).
+interactive objects, and hand-tracking support.
+
+> Note: `hand-tracking` is intentionally **not** requested in the session
+> features right now. On Quest 3 the runtime can report hand input sources
+> alongside the touch controllers when it is, and a hand input source has a
+> null `gripSpace` — which left the controller model frozen while the pointer
+> ray still tracked. It will be added later via `renderer.xr.getHand()` with
+> its own handling rather than piggybacking on the controller/grip slots.
