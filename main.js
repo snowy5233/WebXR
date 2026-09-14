@@ -22,6 +22,20 @@ function setDebugText(text) {
 // Throttle for the console version of the per-frame diagnostics.
 let lastConsoleDiag = 0;
 
+// Surface any uncaught error or unhandled promise rejection on the debug
+// overlay as well as the console. This matters because errors thrown inside
+// the rAF/render-loop callback are otherwise swallowed and just silently kill
+// the loop — which looks exactly like a "hang."
+window.addEventListener('error', (e) => {
+  console.error('[window.onerror]', e.message, e.error);
+  setDebugText('ERROR: ' + (e.message || 'unknown'));
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+  console.error('[unhandledrejection]', reason, e.reason);
+  setDebugText('REJECT: ' + reason);
+});
+
 // ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
@@ -272,6 +286,13 @@ function animate(timestamp, frame) {
   // In XR, WebXRManager owns the camera pose; controls.update() must not run.
   if (!isPresenting) controls.update();
 
+  // Confirm step 3: the render loop actually reached the XR presentation path.
+  // Logged once on the first frame where isPresenting is true.
+  if (isPresenting && !loggedFirstXRFrame) {
+    loggedFirstXRFrame = true;
+    console.log('[WebXR] step 3: first XR-presenting frame rendered');
+  }
+
   // DIAGNOSTIC: report live grip/controller state every frame. This directly
   // observes whether the grip group's matrixWorld is changing at all, and
   // whether a model is actually attached to the live grip (vs. a leftover).
@@ -312,7 +333,17 @@ function animate(timestamp, frame) {
 
   renderer.render(scene, camera);
 }
-renderer.setAnimationLoop(animate);
+// Wrap the loop body so a throw inside a frame (which would otherwise kill the
+// rAF chain silently and look like a hang) is caught, logged, and reported.
+function safeAnimate(timestamp, frame) {
+  try {
+    animate(timestamp, frame);
+  } catch (err) {
+    console.error('[animate threw]', err);
+    setDebugText('animate ERROR: ' + (err && err.message ? err.message : err));
+  }
+}
+renderer.setAnimationLoop(safeAnimate);
 
 // ---------------------------------------------------------------------------
 // Responsive canvas (desktop / window resize). XR sessions manage their own
@@ -398,39 +429,93 @@ async function init() {
 // with a valid gripSpace, so the controller models track. Hand tracking is a
 // planned iteration and should be added via renderer.xr.getHand() with its own
 // handling rather than piggybacking on the controller/grip slots.
+// Each session-start step is logged with a tag and timed, and wrapped in a
+// timeout that rejects if the step never resolves. This turns a silent hang
+// into a clear "step X never completed" signal. Errors are surfaced BOTH to
+// the console and to a always-visible status line (the overlay may be hidden
+// during XR, so setStatus() alone is not enough — see showError()).
+const STEP_TIMEOUT_MS = 10000;
+function withTimeout(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Step "${label}" did not complete within ${STEP_TIMEOUT_MS}ms`)), STEP_TIMEOUT_MS)
+    ),
+  ]);
+}
+
+// Always-visible error surface: also push the message to the (possibly hidden)
+// overlay status so it shows up if the overlay is later re-shown on exit.
+function showError(message) {
+  console.error('[WebXR] ' + message);
+  setStatus('VR error: ' + message);
+  // Make sure the overlay is visible so the error is actually readable.
+  overlay.classList.remove('hidden');
+}
+
 async function startSession() {
   if (currentSession) return;
+  console.log('[WebXR] step 1: requestSession start');
+  let session;
   try {
-    const session = await navigator.xr.requestSession('immersive-vr', {
-      optionalFeatures: ['local-floor', 'bounded-floor'],
-    });
-    onSessionStarted(session);
+    session = await withTimeout(
+      navigator.xr.requestSession('immersive-vr', {
+        optionalFeatures: ['local-floor', 'bounded-floor'],
+      }),
+      'requestSession'
+    );
   } catch (error) {
-    setStatus('Failed to start VR session: ' + error.message);
+    showError('requestSession failed: ' + error.message);
+    return;
   }
+  console.log('[WebXR] step 1: requestSession OK', session && session.enabledFeatures);
+  await onSessionStarted(session);
 }
 
 // Step 3: Hand the session to Three.js and attach lifecycle listeners.
 // renderer.xr.setSession sets up the reference space and makes the renderer
 // render stereo to the headset within the existing setAnimationLoop callback.
+// Note: we do NOT hide the overlay until setSession has resolved, so that any
+// rejection here is still reported on a visible page.
 async function onSessionStarted(session) {
   currentSession = session;
   // OrbitControls is bound to the same camera WebXRManager uses for the headset
   // pose. Disable it now so its spherical state never overwrites head tracking
   // while presenting (also guarded in the render loop via isPresenting).
   controls.enabled = false;
-  // Hide the overlay while immersed; it is not visible in-headset anyway, but
-  // this keeps the flat page tidy if the user later exits VR.
-  overlay.classList.add('hidden');
 
   // Clean up if the session ends from the system side (e.g. user pressed the
   // Oculus/Home button). Must be bound once and removed on our own end.
   session.addEventListener('end', onSessionEnded);
 
-  await renderer.xr.setSession(session);
+  console.log('[WebXR] step 2: renderer.xr.setSession start');
+  try {
+    // setSession() internally awaits gl.makeXRCompatible() (skipped if the
+    // context was created with xrCompatible:true), builds the XR render layer,
+    // awaits session.requestReferenceSpace('local-floor'), and starts the
+    // session-bound animation loop. If any of these hangs or rejects, the
+    // timeout makes it observable instead of silently never completing.
+    await withTimeout(renderer.xr.setSession(session), 'renderer.xr.setSession');
+  } catch (error) {
+    showError('setSession failed: ' + error.message);
+    // Tear down the half-started session so the state is clean.
+    try { await session.end(); } catch (_) {}
+    currentSession = null;
+    return;
+  }
+  console.log('[WebXR] step 2: renderer.xr.setSession OK, isPresenting=', renderer.xr.isPresenting);
 
+  // Now that presentation is fully established, hide the overlay. It is not
+  // visible in-headset anyway, but this keeps the flat page tidy on exit.
+  overlay.classList.add('hidden');
+
+  // step 3 (first XR frame) is confirmed by a one-shot log in animate() below.
   setStatus('In VR. Press the controller trigger while pointing at the cube.');
 }
+
+// Set once on the first XR-presenting frame so we can confirm the render loop
+// actually reached the presentation path.
+let loggedFirstXRFrame = false;
 
 // Step 4: Teardown when the session ends (either user-initiated or system).
 // Reverse the setup from onSessionStarted: remove the listener, drop the
@@ -447,6 +532,8 @@ function onSessionEnded() {
   // entering VR, since the headset pose would otherwise linger.
   controls.enabled = true;
   controls.update();
+  // Reset so the next VR entry logs the first presenting frame again.
+  loggedFirstXRFrame = false;
   overlay.classList.remove('hidden');
   setStatus('Exited VR. Press Enter VR to re-enter.');
 }
