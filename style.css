@@ -84,6 +84,28 @@ canvas {
   transform: translateY(1px);
 }
 
+#locomotion-toggle-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+#locomotion-toggle-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #cdd6ee;
+  background: #2a3550;
+  border: 1px solid rgba(120, 140, 200, 0.3);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+#locomotion-toggle-btn:hover {
+  background: #344066;
+}
+
 .hint {
   margin: 0;
   font-size: 13px;

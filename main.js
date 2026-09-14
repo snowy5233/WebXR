@@ -22,6 +22,9 @@ function setDebugText(text) {
 // Throttle for the console version of the per-frame diagnostics.
 let lastConsoleDiag = 0;
 
+// Previous-frame timestamp for delta-time computation in the render loop.
+let lastTimestamp = 0;
+
 // Surface any uncaught error or unhandled promise rejection on the debug
 // overlay as well as the console. This matters because errors thrown inside
 // the rAF/render-loop callback are otherwise swallowed and just silently kill
@@ -197,6 +200,10 @@ function setupController(index) {
   controller.addEventListener('selectstart', () => onSelectStart(data));
   controller.addEventListener('selectend', () => onSelectEnd(data));
 
+  // 'squeezestart' (grip button) confirms a teleport in teleport locomotion mode.
+  // Deliberately separate from the cube's 'select' (trigger) binding.
+  controller.addEventListener('squeezestart', () => onSqueezeStart(data));
+
   // Connection lifecycle events: update ray visibility and model availability.
   controller.addEventListener('connected', (event) => {
     console.log(
@@ -245,6 +252,371 @@ function onSelectEnd() {
 }
 
 // ---------------------------------------------------------------------------
+// Locomotion
+// ---------------------------------------------------------------------------
+// Two locomotion methods, switchable at runtime:
+//   - 'teleport': point a controller at the floor, see an arc + target ring,
+//     confirm with the 'squeeze' button (grip) to jump there instantly.
+//   - 'smooth': push the thumbstick to move relative to head-forward, with a
+//     comfort vignette that narrows the FOV while moving.
+//
+// CRUCIAL ARCHITECTURE: locomotion never touches the camera or any scene-root
+// object. The headset pose is written to the camera every frame by
+// WebXRManager (renderer.xr) from the viewer pose, and we must not fight that
+// (the earlier OrbitControls bug was exactly that class of conflict). Instead
+// we move the player by changing the REFERENCE SPACE the XR poses are
+// resolved against: we keep a base reference space (local-floor, set up by
+// Three.js during setSession) and maintain an offset reference space
+// (base.getOffsetReferenceSpace(transform)) that we install via
+// renderer.xr.setReferenceSpace(). The viewer/controller poses are then
+// computed against that offset space, so the whole player translates/rotates
+// while head tracking remains fully intact on top of it. This is the
+// canonical WebXR locomotion technique and avoids per-frame camera mutation.
+//
+// Input bindings (deliberately distinct from the cube's 'select'/trigger):
+//   - Teleport confirm: 'squeeze' (grip button) on either controller.
+//   - Smooth move: thumbstick on either controller (x = strafe, y = forward).
+//   - Locomotion toggle in VR: 'A' button (gamepad button index 2) on the
+//     right controller; also a desktop toggle button on the overlay.
+// The cube's color-change stays on the trigger ('select'), unchanged.
+
+const LOCOMOTION_TELEPORT = 'teleport';
+const LOCOMOTION_SMOOTH = 'smooth';
+// Default to teleport (more comfortable / less motion-sickness prone).
+let locomotionMode = LOCOMOTION_TELEPORT;
+
+// The base local-floor reference space, captured once after setSession. All
+// locomotion offsets are derived from this so they compose cleanly.
+let baseReferenceSpace = null;
+
+// Smooth-locomotion tuning.
+const SMOOTH_SPEED = 1.6; // meters per second
+// Comfort vignette: a black ring that narrows the visible area while moving.
+const vignette = createVignette();
+let vignetteIntensity = 0; // 0..1, eased toward target each frame
+
+// Teleport targeting state.
+const teleportRaycaster = new THREE.Raycaster();
+// Objects the teleport arc can land on (the floor).
+const teleportSurfaces = [floor];
+// Arc curve + target ring, hidden unless a controller is pointing at the floor.
+const teleportArc = new THREE.Line(
+  new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ color: 0x66ffaa, transparent: true, opacity: 0.85 })
+);
+teleportArc.visible = false;
+scene.add(teleportArc);
+const teleportRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.12, 0.18, 32),
+  new THREE.MeshBasicMaterial({ color: 0x66ffaa, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+);
+teleportRing.rotation.x = -Math.PI / 2;
+teleportRing.visible = false;
+scene.add(teleportRing);
+// Scratch vectors reused per frame to avoid allocations.
+const _teleportOrigin = new THREE.Vector3();
+const _teleportDir = new THREE.Vector3();
+const _teleportHit = new THREE.Vector3(); // dedicated return value to avoid aliasing _tmpVec3
+const _tmpMat4 = new THREE.Matrix4();
+const _tmpVec3 = new THREE.Vector3();
+const _moveVec = new THREE.Vector3();
+const _headForward = new THREE.Vector3();
+
+// Per-controller gamepad state, polled each frame from inputSource.gamepad.
+// We store the last-frame thumbstick so we can detect edges if needed, and a
+// smoothed squeeze value isn't required (squeeze is binary via events).
+const gamepadState = [null, null];
+
+// Reusable temp arrays for the teleport parabola sample points.
+const ARC_SEGMENTS = 24;
+const arcPoints = [];
+for (let i = 0; i <= ARC_SEGMENTS; i++) arcPoints.push(new THREE.Vector3());
+
+function createVignette() {
+  // A simple screen-space-ish vignette: a ring mesh placed in front of the
+  // camera is too fiddly with stereo XR. Instead use a radial-gradient texture
+  // on a fullscreen-ish plane attached to the camera. The simplest robust XR
+  // vignette is a canvas-texture plane positioned just in front of the camera
+  // and rendered on top (depthTest false). We parent it to the camera so it
+  // follows head tracking automatically.
+  const size = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(
+    size / 2, size / 2, size * 0.18,
+    size / 2, size / 2, size * 0.5
+  );
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    opacity: 0,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+  mesh.renderOrder = 999;
+  mesh.frustumCulled = false;
+  // Position close to camera, in front. Parented to the camera so it tracks
+  // head movement automatically.
+  mesh.position.set(0, 0, -1);
+  mesh.visible = false;
+  return mesh;
+}
+
+// Install (or clear) the locomotion offset as the renderer's reference space.
+// offset is an XRRigidTransform (position+orientation) relative to the base
+// local-floor space. Pass null to reset to the base space.
+function applyLocomotionOffset(x, z, yaw) {
+  if (!baseReferenceSpace) return;
+  // XRRigidTransform is a NATIVE WebXR global (not a Three.js export). Its
+  // constructor takes (position, orientation) as DOMPointInit objects
+  // {x,y,z,w}. We only translate the player on the floor plane (x,z); y and the
+  // orientation stay identity (no yaw in v1).
+  const t = new XRRigidTransform(
+    { x: x, y: 0, z: z, w: 1 },
+    { x: 0, y: 0, z: 0, w: 1 }
+  );
+  const offsetSpace = baseReferenceSpace.getOffsetReferenceSpace(t);
+  renderer.xr.setReferenceSpace(offsetSpace);
+}
+
+// Teleport: instantly move the player so that their current head position
+// maps to `targetX/targetZ` (i.e. the spot they aimed at ends up under their
+// head). We compute the offset from where the head currently is (in base-space)
+// to the target, then install that offset reference space.
+function teleportTo(targetX, targetZ) {
+  if (!baseReferenceSpace) return;
+  // Current head position in the base reference space. While presenting, the
+  // camera's world position equals its base-space position when no offset is
+  // applied; to be robust we read it relative to the current reference space
+  // (which already includes any prior locomotion). The simplest correct read:
+  // get the viewer pose from the current frame. We don't have the frame here
+  // (event handler), so instead compute from the camera world position minus
+  // the current offset translation we track.
+  //
+  // We track the player's accumulated offset (playerOffsetX/Z) which is exactly
+  // the translation component of the installed offset space. The head's
+  // base-space position = cameraWorldPos - playerOffset (since the offset
+  // space shifts everything by playerOffset). So target offset =
+  // playerOffset + (target - headBase).
+  camera.getWorldPosition(_tmpVec3);
+  const headBaseX = _tmpVec3.x - playerOffsetX;
+  const headBaseZ = _tmpVec3.z - playerOffsetZ;
+  playerOffsetX = playerOffsetX + (targetX - headBaseX);
+  playerOffsetZ = playerOffsetZ + (targetZ - headBaseZ);
+  applyLocomotionOffset(playerOffsetX, playerOffsetZ, 0);
+}
+
+// Accumulated player offset (translation of the installed offset space).
+// Declared before teleportTo uses it (module init runs these before any call).
+let playerOffsetX = 0;
+let playerOffsetZ = 0;
+
+// Build the teleport parabola from a controller's ray and update the arc +
+// ring. Returns the landing point (Vector3) if it hits the floor, else null.
+function updateTeleportAim(data) {
+  // Origin + direction from the controller target-ray pose.
+  _tmpMat4.identity().extractRotation(data.controller.matrixWorld);
+  _teleportOrigin.setFromMatrixPosition(data.controller.matrixWorld);
+  _teleportDir.set(0, 0, -1).applyMatrix4(_tmpMat4);
+
+  // Simple projectile parabola for a natural aiming arc.
+  const speed = 6;
+  const gravity = 9.8;
+  let hitPoint = null;
+  let hitDist = 0;
+  // Sample the parabola and intersect with the floor (y=0 plane) along the way.
+  const vx = _teleportDir.x * speed;
+  const vy = _teleportDir.y * speed;
+  const vz = _teleportDir.z * speed;
+  for (let i = 0; i <= ARC_SEGMENTS; i++) {
+    const dt = i * 0.04;
+    const px = _teleportOrigin.x + vx * dt;
+    const py = _teleportOrigin.y + vy * dt - 0.5 * gravity * dt * dt;
+    const pz = _teleportOrigin.z + vz * dt;
+    arcPoints[i].set(px, py, pz);
+    if (hitPoint === null && py <= 0 && i > 0) {
+      // Linearly interpolate between i-1 and i to find the y=0 crossing.
+      const prev = arcPoints[i - 1];
+      const frac = prev.y / (prev.y - py);
+      hitPoint = _teleportHit.set(
+        prev.x + (px - prev.x) * frac,
+        0,
+        prev.z + (pz - prev.z) * frac
+      );
+      hitDist = i;
+    }
+  }
+  if (!hitPoint) {
+    teleportArc.visible = false;
+    teleportRing.visible = false;
+    return null;
+  }
+  // Draw arc up to the hit point.
+  const positions = [];
+  for (let i = 0; i <= hitDist; i++) {
+    positions.push(arcPoints[i].x, arcPoints[i].y, arcPoints[i].z);
+  }
+  positions.push(hitPoint.x, hitPoint.y, hitPoint.z);
+  teleportArc.geometry.setPositions(positions);
+  teleportArc.visible = true;
+  teleportRing.position.set(hitPoint.x, 0.01, hitPoint.z);
+  teleportRing.visible = true;
+  return hitPoint;
+}
+
+// Per-frame locomotion update. Called from animate() only while presenting.
+// frame is the XRFrame (needed for nothing here now, but kept for parity).
+function updateLocomotion(dt) {
+  // Attach the vignette to the camera on first presenting frame (it must be a
+  // child of the camera that renderer.xr actually uses; parenting to our user
+  // camera works because updateCamera copies transforms).
+  if (vignette.parent !== camera) {
+    camera.add(vignette);
+  }
+
+  if (locomotionMode === LOCOMOTION_TELEPORT) {
+    // Show the aim arc from any controller pointing roughly downward at the
+    // floor. We use the first controller with a visible ray that yields a hit.
+    let aim = null;
+    for (const data of controllerData) {
+      if (data && data.controllerGrip.visible) {
+        const p = updateTeleportAim(data);
+        if (p) { aim = p; break; }
+      }
+    }
+    if (!aim) {
+      teleportArc.visible = false;
+      teleportRing.visible = false;
+    }
+    // Teleport is confirmed via the 'squeeze' event (onSqueezeStart), not here.
+    vignetteIntensity = 0;
+  } else if (locomotionMode === LOCOMOTION_SMOOTH) {
+    // Hide teleport visuals while in smooth mode.
+    teleportArc.visible = false;
+    teleportRing.visible = false;
+    // Sum thumbstick inputs from all controllers; move relative to head-forward.
+    _moveVec.set(0, 0, 0);
+    let moving = false;
+    for (const gp of gamepadState) {
+      if (!gp || !gp.axes) continue;
+      // Quest Touch: axes[2]/[3] are the thumbstick on most profiles; axes[0]/[1]
+      // are also sometimes the stick. We take the axes with the largest magnitude
+      // among the last two pairs to be robust across profiles.
+      const ax = gp.axes.length >= 4 ? gp.axes[2] : (gp.axes[0] || 0);
+      const ay = gp.axes.length >= 4 ? gp.axes[3] : (gp.axes[1] || 0);
+      if (Math.abs(ax) > 0.15 || Math.abs(ay) > 0.15) {
+        _moveVec.x += ax;
+        _moveVec.z += ay;
+        moving = true;
+      }
+    }
+    if (moving && baseReferenceSpace) {
+      // Direction relative to head-forward. Head forward = camera -Z in world.
+      _headForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      _headForward.y = 0;
+      _headForward.normalize();
+      // Right = head-forward rotated -90deg around Y.
+      const right = _tmpMat4.makeRotationY(-Math.PI / 2);
+      const headRight = _headForward.clone().applyMatrix4(right).normalize();
+      // Forward input is -ay (push up = forward), strafe is ax.
+      const forwardAmt = -_moveVec.z;
+      const strafeAmt = _moveVec.x;
+      const dx = _headForward.x * forwardAmt + headRight.x * strafeAmt;
+      const dz = _headForward.z * forwardAmt + headRight.z * strafeAmt;
+      const len = Math.hypot(dx, dz);
+      if (len > 0) {
+        const step = SMOOTH_SPEED * dt;
+        playerOffsetX += (dx / len) * step * Math.min(1, len);
+        playerOffsetZ += (dz / len) * step * Math.min(1, len);
+        applyLocomotionOffset(playerOffsetX, playerOffsetZ, 0);
+        vignetteIntensity = 1;
+      }
+    } else {
+      vignetteIntensity = 0;
+    }
+  }
+
+  // Ease the vignette toward its target.
+  const target = vignetteIntensity;
+  vignette.material.opacity += (target - vignette.material.opacity) * Math.min(1, dt * 8);
+  vignette.visible = vignette.material.opacity > 0.01;
+}
+
+// Teleport confirm handler, bound to 'squeeze' (grip) on each controller.
+// Deliberately a different button from the cube's 'select' (trigger).
+function onSqueezeStart(data) {
+  if (locomotionMode !== LOCOMOTION_TELEPORT) return;
+  const p = updateTeleportAim(data);
+  if (p) teleportTo(p.x, p.z);
+}
+
+// Toggle locomotion mode (teleport <-> smooth). Called from the desktop UI
+// button and the VR 'A' button.
+function toggleLocomotionMode() {
+  locomotionMode =
+    locomotionMode === LOCOMOTION_TELEPORT ? LOCOMOTION_SMOOTH : LOCOMOTION_TELEPORT;
+  updateLocomotionModeUI();
+  console.log('[locomotion] mode ->', locomotionMode);
+}
+
+// --- Desktop UI toggle button ---
+const locomotionToggleContainer = document.getElementById('locomotion-toggle-container');
+function buildLocomotionToggleButton() {
+  const btn = document.createElement('button');
+  btn.id = 'locomotion-toggle-btn';
+  btn.textContent = '';
+  btn.addEventListener('click', toggleLocomotionMode);
+  return btn;
+}
+const locomotionToggleBtn = buildLocomotionToggleButton();
+locomotionToggleContainer.appendChild(locomotionToggleBtn);
+function updateLocomotionModeUI() {
+  if (!locomotionToggleBtn) return;
+  locomotionToggleBtn.textContent =
+    'Locomotion: ' + (locomotionMode === LOCOMOTION_TELEPORT ? 'Teleport' : 'Smooth') + ' (click to switch)';
+}
+updateLocomotionModeUI();
+
+// Poll controller gamepads each frame for thumbstick (smooth locomotion) and
+// detect a rising edge on button index 2 to toggle locomotion mode in VR.
+// Quest Touch button indices (per the WebXR gamepad mapping):
+//   0 = trigger, 1 = squeeze/grip, 2 = A/X, 3 = B/Y, 4 = thumbstick press.
+// We use button 2 (A/X) to toggle locomotion mode — distinct from the cube's
+// trigger (button 0 / 'select') and teleport's grip (button 1 / 'squeeze').
+let toggleButtonWasDown = false;
+function pollGamepads(frame) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  const sources = session.inputSources;
+  // Reset per-frame gamepad slots; we map by controller index (handedness not
+  // strictly needed here since movement just sums all thumbsticks).
+  gamepadState[0] = null;
+  gamepadState[1] = null;
+  let toggleDown = false;
+  for (const src of sources) {
+    const idx = src.handedness === 'right' ? 0 : 1;
+    if (src.gamepad) {
+      gamepadState[idx] = src.gamepad;
+      // Detect A/X button (index 2) rising edge on the right controller.
+      if (src.handedness === 'right' && src.gamepad.buttons.length > 2) {
+        if (src.gamepad.buttons[2].pressed) toggleDown = true;
+      }
+    }
+  }
+  if (toggleDown && !toggleButtonWasDown) toggleLocomotionMode();
+  toggleButtonWasDown = toggleDown;
+}
+
+// ---------------------------------------------------------------------------
 // Animation / render loop
 // ---------------------------------------------------------------------------
 // renderer.setAnimationLoop is the WebXR-correct entry point: when an XR
@@ -253,6 +625,11 @@ function onSelectEnd() {
 // desktop (no XR session) it falls back to the standard window rAF. The
 // optional `frame` argument is the XRFrame, available during XR.
 function animate(timestamp, frame) {
+  // Frame delta time (seconds), clamped so a stalled/hitched frame can't fling
+  // the player across the room in smooth locomotion.
+  const dt = Math.min(0.05, (timestamp - (lastTimestamp || timestamp)) / 1000);
+  lastTimestamp = timestamp;
+
   // Desktop preview: gently rotate the cube so the scene feels alive even
   // without a headset. (Harmless in XR too; cheap.)
   cube.rotation.y += 0.005;
@@ -286,6 +663,18 @@ function animate(timestamp, frame) {
   // In XR, WebXRManager owns the camera pose; controls.update() must not run.
   if (!isPresenting) controls.update();
 
+  // Locomotion runs only while presenting, and crucially AFTER WebXRManager
+  // has applied the headset pose to the camera this frame (that happens inside
+  // renderer.render below via xr.updateCamera/getCamera). For smooth locomotion
+  // we read the camera's quaternion (head-forward) which is already updated
+  // for the current frame by the time the previous frame rendered it; reading
+  // it here is fine because we apply movement to the REFERENCE SPACE, not the
+  // camera, so there is no fight with head tracking.
+  if (isPresenting) {
+    pollGamepads(frame);
+    updateLocomotion(dt);
+  }
+
   // Confirm step 3: the render loop actually reached the XR presentation path.
   // Logged once on the first frame where isPresenting is true.
   if (isPresenting && !loggedFirstXRFrame) {
@@ -307,6 +696,7 @@ function animate(timestamp, frame) {
     ? session.enabledFeatures.join(',')
     : 'none';
   dbgLines.push(`presenting=${isPresenting} xr.enabled=${renderer.xr.enabled} feats=${features}`);
+  dbgLines.push(`locomotion=${locomotionMode} player=(${playerOffsetX.toFixed(2)},${playerOffsetZ.toFixed(2)})`);
   for (const data of controllerData) {
     if (!data) continue;
     const gripPos = new THREE.Vector3().setFromMatrixPosition(data.controllerGrip.matrixWorld);
@@ -505,6 +895,17 @@ async function onSessionStarted(session) {
   }
   console.log('[WebXR] step 2: renderer.xr.setSession OK, isPresenting=', renderer.xr.isPresenting);
 
+  // Capture the base local-floor reference space once, after setSession has
+  // resolved it. All locomotion offsets are derived from this space so they
+  // compose cleanly and head tracking stays intact on top.
+  baseReferenceSpace = renderer.xr.getReferenceSpace();
+  // Reset any accumulated player offset and clear a custom reference space so
+  // the session starts at the true origin.
+  playerOffsetX = 0;
+  playerOffsetZ = 0;
+  renderer.xr.setReferenceSpace(null);
+  console.log('[WebXR] base reference space captured:', baseReferenceSpace && baseReferenceSpace.type);
+
   // Now that presentation is fully established, hide the overlay. It is not
   // visible in-headset anyway, but this keeps the flat page tidy on exit.
   overlay.classList.add('hidden');
@@ -527,6 +928,17 @@ function onSessionEnded() {
   }
   currentSession = null;
   renderer.xr.setSession(null);
+  // Drop the locomotion offset reference space and clear the base space so the
+  // next session starts at the true origin with a fresh local-floor space.
+  renderer.xr.setReferenceSpace(null);
+  baseReferenceSpace = null;
+  playerOffsetX = 0;
+  playerOffsetZ = 0;
+  // Hide any locomotion visuals and the vignette.
+  teleportArc.visible = false;
+  teleportRing.visible = false;
+  vignette.visible = false;
+  vignette.material.opacity = 0;
   // Re-enable desktop orbit controls now that WebXRManager is no longer
   // driving the camera. Restore the camera's manual pose the user had before
   // entering VR, since the headset pose would otherwise linger.

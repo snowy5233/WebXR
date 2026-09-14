@@ -19,6 +19,30 @@ No build step. Open `index.html` through a local static server and it runs.
   pressed while pointing at it (with a hover highlight for feedback).
 - Graceful fallback message when WebXR is not supported (e.g. on a desktop
   browser), with a flat 3D preview you can orbit.
+- **Locomotion** (switchable at runtime; defaults to teleport on first load,
+  choice persists for the session):
+  - **Teleport**: point a controller at the floor to see a parabolic arc +
+    target ring; press the **grip** (squeeze) button to jump there instantly
+    (comfort-mode, no smooth motion).
+  - **Smooth**: push a **thumbstick** to move relative to head-forward, with a
+    comfort vignette that narrows the FOV while moving.
+  - Switch modes with the **Locomotion** button on the desktop overlay, or the
+    **A/X** button on the right controller in VR.
+  - Locomotion moves the player via an offset **reference space** (not the
+    camera), so it composes cleanly with the `local-floor` space and never
+    fights head tracking.
+
+## Input bindings (v1)
+
+| Action | Input |
+| --- | --- |
+| Change cube color | controller **trigger** (the WebXR `select` event) |
+| Teleport confirm | controller **grip/squeeze** button |
+| Smooth move | controller **thumbstick** (x = strafe, y = forward) |
+| Toggle locomotion mode | right controller **A/X** button, or the desktop toggle button |
+
+The cube's color-change (trigger) and locomotion (grip / thumbstick / A) use
+separate, clearly-documented bindings and never conflict.
 
 ## Project structure
 
