@@ -32,6 +32,22 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, xrCompatible: true }
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+// IMPORTANT: enable WebXR rendering. WebXRManager.enabled defaults to false.
+// renderer.render() only swaps in the XR camera (cameraXR, driven by the
+// headset pose) when `xr.enabled === true && xr.isPresenting === true`. With
+// this left false, the session still starts and controllers still get poses
+// (controller.update() runs on the session rAF regardless), but render()
+// keeps using the flat desktop camera — so head tracking does nothing and the
+// view is locked to the desktop camera position (0, 1.6, 3), i.e. the user
+// sees everything from ~3m back. This must be set before presenting.
+renderer.xr.enabled = true;
+// Three.js's WebXRManager defaults its referenceSpaceType to 'local-floor'
+// and requests it during setSession(). That is the correct floor-anchored
+// space for a standing Quest 3 user, so we don't need to call
+// setReferenceSpaceType() here. Note there is NO silent fallback: if
+// requestReferenceSpace('local-floor') rejected, setSession() would throw and
+// the session would fail to present — so successfully presenting implies
+// local-floor was granted.
 document.body.appendChild(renderer.domElement);
 
 // ---------------------------------------------------------------------------
@@ -262,7 +278,14 @@ function animate(timestamp, frame) {
   // The on-screen overlay updates every frame (readable in-headset); the
   // console log is throttled to ~2x/second.
   const dbgLines = [];
-  dbgLines.push(`presenting=${isPresenting}`);
+  // Surface xr.enabled and the session's enabledFeatures so the origin/floor
+  // question can be confirmed at runtime: enabled must be true to use the XR
+  // camera, and the resolved features should include 'local-floor'.
+  const session = renderer.xr.getSession();
+  const features = session && session.enabledFeatures
+    ? session.enabledFeatures.join(',')
+    : 'none';
+  dbgLines.push(`presenting=${isPresenting} xr.enabled=${renderer.xr.enabled} feats=${features}`);
   for (const data of controllerData) {
     if (!data) continue;
     const gripPos = new THREE.Vector3().setFromMatrixPosition(data.controllerGrip.matrixWorld);
