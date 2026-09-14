@@ -291,11 +291,25 @@ async function init() {
 // Step 2: Request a session.
 // 'immersive-ar' is not requested here; we want full VR. The required
 // features list is kept minimal so the request succeeds broadly.
+//
+// IMPORTANT: 'hand-tracking' is intentionally NOT requested here. On the
+// Quest 3 the runtime can report hand input sources at the same time as (or
+// instead of) the touch controllers when hand-tracking is enabled. A hand
+// input source has a valid targetRaySpace (so the pointer ray tracks) but a
+// null gripSpace (per the WebXR spec, hands are not "held"). Three.js's
+// WebXRController.update() only writes the grip group's matrix when
+// inputSource.gripSpace is non-null, so if a hand source lands on a controller
+// slot the ray keeps updating while the controller MODEL freezes at the grip
+// group's origin — the exact "model frozen ~3m from hand" symptom.
+// Keeping this controller-only means every slot is a tracked-pointer source
+// with a valid gripSpace, so the controller models track. Hand tracking is a
+// planned iteration and should be added via renderer.xr.getHand() with its own
+// handling rather than piggybacking on the controller/grip slots.
 async function startSession() {
   if (currentSession) return;
   try {
     const session = await navigator.xr.requestSession('immersive-vr', {
-      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+      optionalFeatures: ['local-floor', 'bounded-floor'],
     });
     onSessionStarted(session);
   } catch (error) {
