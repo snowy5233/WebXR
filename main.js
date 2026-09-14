@@ -3,6 +3,26 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 // ---------------------------------------------------------------------------
+// Debug overlay (on-screen, updates every frame)
+// ---------------------------------------------------------------------------
+// A fixed-position text panel that reports live controller/grip state so we
+// can directly observe (in-headset or on desktop) whether the grip group's
+// matrixWorld is actually changing and whether a model is attached to it.
+const debugEl = document.createElement('div');
+debugEl.id = 'debug-overlay';
+debugEl.style.cssText =
+  'position:fixed;left:8px;top:8px;z-index:20;padding:8px 10px;' +
+  'background:rgba(0,0,0,0.6);color:#7fffd0;font:12px/1.4 monospace;' +
+  'white-space:pre;pointer-events:none;max-width:60vw;max-height:90vh;overflow:hidden;';
+document.body.appendChild(debugEl);
+function setDebugText(text) {
+  debugEl.textContent = text;
+}
+
+// Throttle for the console version of the per-frame diagnostics.
+let lastConsoleDiag = 0;
+
+// ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
 // A single WebGLRenderer drives both the desktop preview and the XR session.
@@ -108,7 +128,20 @@ function setupController(index) {
   // `getControllerGrip` tracks the grip pose; the physical controller model
   // is parented here so it appears in the user's hand.
   const controllerGrip = renderer.xr.getControllerGrip(index);
-  controllerGrip.add(controllerModelFactory.createControllerModel(controllerGrip));
+
+  // DIAGNOSTIC: capture the exact model object the factory creates and observe
+  // its lifecycle. The factory loads the glTF asynchronously and `add`s it to
+  // this model object; we then add the model to the grip. We log when the
+  // factory's internal 'connected' fires and when the glTF scene is added, so
+  // we can confirm the visible model is the one attached to THIS grip.
+  const model = controllerModelFactory.createControllerModel(controllerGrip);
+  model.addEventListener('connected', (event) => {
+    console.log(
+      `[ctrl ${index}] MODEL 'connected' fired; input source:`,
+      event.data && { handedness: event.data.handedness, targetRayMode: event.data.targetRayMode, hasGripSpace: !!event.data.gripSpace, isHand: !!event.data.hand }
+    );
+  });
+  controllerGrip.add(model);
   scene.add(controllerGrip);
 
   // A thin line representing the pointer ray, hidden until the controller is
@@ -126,7 +159,7 @@ function setupController(index) {
   controller.add(rayLine);
   scene.add(controller);
 
-  const data = { controller, controllerGrip, rayLine };
+  const data = { controller, controllerGrip, rayLine, model, index };
   controllerData[index] = data;
 
   // 'selectstart' fires when the trigger is pressed; 'selectend' on release.
@@ -136,9 +169,14 @@ function setupController(index) {
 
   // Connection lifecycle events: update ray visibility and model availability.
   controller.addEventListener('connected', (event) => {
+    console.log(
+      `[ctrl ${index}] RAY 'connected' fired; input source:`,
+      event.data && { handedness: event.data.handedness, targetRayMode: event.data.targetRayMode, hasGripSpace: !!event.data.gripSpace, isHand: !!event.data.hand }
+    );
     data.rayLine.visible = true;
   });
   controller.addEventListener('disconnected', () => {
+    console.log(`[ctrl ${index}] RAY 'disconnected' fired`);
     data.rayLine.visible = false;
   });
 }
@@ -217,6 +255,38 @@ function animate(timestamp, frame) {
   // Only drive the camera from OrbitControls in the flat desktop preview.
   // In XR, WebXRManager owns the camera pose; controls.update() must not run.
   if (!isPresenting) controls.update();
+
+  // DIAGNOSTIC: report live grip/controller state every frame. This directly
+  // observes whether the grip group's matrixWorld is changing at all, and
+  // whether a model is actually attached to the live grip (vs. a leftover).
+  // The on-screen overlay updates every frame (readable in-headset); the
+  // console log is throttled to ~2x/second.
+  const dbgLines = [];
+  dbgLines.push(`presenting=${isPresenting}`);
+  for (const data of controllerData) {
+    if (!data) continue;
+    const gripPos = new THREE.Vector3().setFromMatrixPosition(data.controllerGrip.matrixWorld);
+    const rayPos = new THREE.Vector3().setFromMatrixPosition(data.controller.matrixWorld);
+    const gripVisible = data.controllerGrip.visible;
+    const modelChildren = data.model.children.length;
+    // Walk the loaded glTF scene (first child of the XRControllerModel) to see
+    // if it has meshes; if the load failed or hasn't happened, this is 0.
+    let modelMeshCount = 0;
+    if (data.model.children.length > 0) {
+      data.model.children[0].traverse((n) => { if (n.isMesh) modelMeshCount++; });
+    }
+    const dbg =
+      `c${data.index}: grip.pos=(${gripPos.x.toFixed(2)},${gripPos.y.toFixed(2)},${gripPos.z.toFixed(2)}) ` +
+      `ray.pos=(${rayPos.x.toFixed(2)},${rayPos.y.toFixed(2)},${rayPos.z.toFixed(2)}) ` +
+      `grip.vis=${gripVisible} model.kids=${modelChildren} model.meshes=${modelMeshCount}`;
+    dbgLines.push(dbg);
+  }
+  setDebugText(dbgLines.join('\n'));
+  if (timestamp && timestamp - lastConsoleDiag > 500) {
+    lastConsoleDiag = timestamp;
+    console.log('[diag]', dbgLines.join(' | '));
+  }
+
   renderer.render(scene, camera);
 }
 renderer.setAnimationLoop(animate);
