@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>WebXR Quest 3 Demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- The canvas is created and managed by main.js; nothing is hard-coded here. -->
+
+  <!-- Overlay shown while a WebXR session is NOT active. main.js toggles it. -->
+  <div id="overlay" class="overlay">
+    <div class="overlay-card">
+      <h1>WebXR Quest 3 Demo</h1>
+      <p id="status-message">Initializing…</p>
+      <!-- The Enter VR button is injected/removed by main.js based on XR support. -->
+      <div id="vr-button-container"></div>
+      <p class="hint">
+        On desktop this renders a flat 3D preview. To enter VR, open this page in a
+        WebXR-capable browser (e.g. the Meta Quest 3 browser) over HTTPS or localhost.
+      </p>
+    </div>
+  </div>
+
+  <!-- Import map: maps the bare specifiers used in main.js to the pinned Three.js
+       CDN build. No build step or bundler required. -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
