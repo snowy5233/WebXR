@@ -191,6 +191,12 @@ function animate(timestamp, frame) {
 
   // Hover highlight: if either controller ray is currently over the cube,
   // nudge its emissive so the user knows it is targeted.
+  // NOTE: while presenting in XR, the headset pose (position + quaternion) is
+  // applied to the camera by WebXRManager via renderer.xr. OrbitControls is
+  // bound to that same camera object, so calling controls.update() while in XR
+  // would overwrite the headset pose from its internal spherical state and
+  // freeze the view. Skip it entirely when presenting.
+  const isPresenting = renderer.xr.isPresenting;
   let hovering = false;
   for (const data of controllerData) {
     if (data && data.rayLine.visible) {
@@ -208,7 +214,9 @@ function animate(timestamp, frame) {
     cube.material.emissive.setHex(0x000000);
   }
 
-  controls.update();
+  // Only drive the camera from OrbitControls in the flat desktop preview.
+  // In XR, WebXRManager owns the camera pose; controls.update() must not run.
+  if (!isPresenting) controls.update();
   renderer.render(scene, camera);
 }
 renderer.setAnimationLoop(animate);
@@ -300,6 +308,10 @@ async function startSession() {
 // render stereo to the headset within the existing setAnimationLoop callback.
 async function onSessionStarted(session) {
   currentSession = session;
+  // OrbitControls is bound to the same camera WebXRManager uses for the headset
+  // pose. Disable it now so its spherical state never overwrites head tracking
+  // while presenting (also guarded in the render loop via isPresenting).
+  controls.enabled = false;
   // Hide the overlay while immersed; it is not visible in-headset anyway, but
   // this keeps the flat page tidy if the user later exits VR.
   overlay.classList.add('hidden');
@@ -323,6 +335,11 @@ function onSessionEnded() {
   }
   currentSession = null;
   renderer.xr.setSession(null);
+  // Re-enable desktop orbit controls now that WebXRManager is no longer
+  // driving the camera. Restore the camera's manual pose the user had before
+  // entering VR, since the headset pose would otherwise linger.
+  controls.enabled = true;
+  controls.update();
   overlay.classList.remove('hidden');
   setStatus('Exited VR. Press Enter VR to re-enter.');
 }
