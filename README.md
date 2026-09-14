@@ -58,12 +58,33 @@ Three.js is loaded from a CDN via an
 [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap)
 (pinned to `three@0.169.0`) in `index.html`, so there is nothing to install.
 
-## Run locally (desktop preview)
+## Run it
 
-WebXR requires a **secure context** — `https://` or `http://localhost` — so you
-must serve the files over a local static server, not open the file directly.
+The site is published via **GitHub Pages** at:
 
-Pick any static server, for example:
+> <https://snowy5233.github.io/WebXR/>
+
+This is an HTTPS origin, which is what WebXR requires (WebXR only works in a
+secure context — `https://` or `http://localhost`). No local server needed.
+
+- **Desktop:** open the URL in a WebXR-capable browser (e.g. Chrome). Without
+  a headset you'll get the flat 3D preview and a fallback message; that's
+  expected. To test the immersive-vr path itself you need a WebXR device.
+- **Meta Quest 3:** open the **Meta Quest Browser**, navigate to the URL above,
+  and tap **Enter VR**. Point a controller at the cube and pull the trigger to
+  cycle its color. To move around: in **teleport** mode (the default), point a
+  controller at the floor and press the **grip** button; in **smooth** mode,
+  push a thumbstick. Switch modes with the right controller's **A/X** button
+  (or the desktop toggle before entering VR).
+
+GitHub Pages serves the repository's `main` branch, so changes merged to
+`main` go live at that URL (after Pages rebuilds).
+
+## Optional: run locally instead
+
+If you'd rather run from your own machine (e.g. to test an unmerged branch),
+serve the files over a local static server — WebXR requires `https://` or
+`localhost`, so don't open the file directly:
 
 ```bash
 # Python 3 (no install needed on most systems)
@@ -73,44 +94,16 @@ python3 -m http.server 8000
 npx serve .
 ```
 
-Then open `http://localhost:8000/` in a WebXR-capable desktop browser (e.g.
-Chrome). On a machine without a headset you'll get the flat 3D preview and a
-fallback message; that is expected. To test the immersive-vr path itself you
-need a WebXR device.
+Then open `http://localhost:8000/` on desktop. To reach the same server from
+the Quest 3 you must use **HTTPS** (a plain `http://<your-laptop-ip>:8000`
+URL will not work in the headset). The simplest way is a tunnel such as
+[`ngrok`](https://ngrok.com/) or Cloudflare Tunnel:
 
-## Load it on the Meta Quest 3
+```bash
+ngrok http 8000
+```
 
-The Quest 3 browser is a secure context, but you still need to reach the page
-over HTTPS or localhost. Two common approaches:
-
-### Option A — Host on any HTTPS URL (simplest from the headset)
-
-Push the repo to GitHub and enable GitHub Pages (or use any HTTPS static host).
-Then in the Quest 3 browser, just navigate to that HTTPS URL and tap
-**Enter VR**.
-
-### Option B — Serve from your dev machine and reach it from the headset
-
-1. Start a static server on your computer (see above).
-2. Make it reachable from the Quest 3 over the same Wi-Fi network, and use
-   **HTTPS**. The simplest way is a tunnel such as
-   [`ngrok`](https://ngrok.com/) or Cloudflare Tunnel, e.g.:
-
-   ```bash
-   ngrok http 8000
-   ```
-
-   Use the resulting `https://*.ngrok-free.app` URL.
-3. Put on the headset, open the **Meta Quest Browser** (or a Chromium-based
-   browser), and navigate to that HTTPS URL.
-4. Tap **Enter VR**. Put the headset on; point a controller at the cube and
-   pull the trigger to cycle its color. To move around: in **teleport** mode
-   (the default), point a controller at the floor and press the **grip** button;
-   in **smooth** mode, push a thumbstick. Switch modes with the right
-   controller's **A/X** button (or the desktop toggle before entering VR).
-
-> A plain `http://<your-laptop-ip>:8000` URL will **not** work in the headset
-> because WebXR is only available in secure contexts. Use HTTPS or localhost.
+Use the resulting `https://*.ngrok-free.app` URL in the Quest 3 browser.
 
 ## Performance notes (Quest 3)
 
