@@ -264,7 +264,9 @@ function animate(timestamp, frame) {
     );
   }
   setDebugText(dbgLines.join('\n'));
-  if (timestamp && timestamp - lastConsoleDiag > 500) {
+  // Console diag only while presenting — the on-screen overlay covers the
+  // desktop preview, and twice-a-second logs there are just spam.
+  if (isPresenting && timestamp && timestamp - lastConsoleDiag > 500) {
     lastConsoleDiag = timestamp;
     console.log('[diag]', dbgLines.join(' | '));
   }
