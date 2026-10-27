@@ -15,6 +15,7 @@
 // model is hidden for hand input sources (controllers.js 'connected'), so the
 // v1 "frozen model" bug can no longer occur.
 
+import * as THREE from 'three';
 import { renderer, scene, camera, controls, onResize } from './src/scene.js';
 import { installGlobalErrorHandlers, setDebugText } from './src/debug.js';
 import { controllerData, pollGamepads, inputCallbacks, squeezeCallbacks, updateHover } from './src/controllers.js';
