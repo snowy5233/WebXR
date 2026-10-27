@@ -64,7 +64,15 @@ canvas {
   margin-bottom: 16px;
 }
 
-#enter-vr-btn {
+/* Buttons are centered in a row with a small gap so Enter VR and Enter AR
+   sit side by side when both are supported. */
+#vr-button-container {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#enter-vr-btn,
+#enter-ar-btn {
   padding: 12px 22px;
   font-size: 16px;
   font-weight: 600;
@@ -76,11 +84,22 @@ canvas {
   transition: background 0.15s ease, transform 0.05s ease;
 }
 
-#enter-vr-btn:hover {
+#enter-vr-btn:hover,
+#enter-ar-btn:hover {
   background: #3d7bff;
 }
 
-#enter-vr-btn:active {
+/* AR button: teal to visually distinguish passthrough mode. */
+#enter-ar-btn {
+  background: #0f9b8e;
+}
+
+#enter-ar-btn:hover {
+  background: #14b3a4;
+}
+
+#enter-vr-btn:active,
+#enter-ar-btn:active {
   transform: translateY(1px);
 }
 
