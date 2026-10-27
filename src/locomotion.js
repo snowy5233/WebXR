@@ -86,9 +86,14 @@ const vignette = createVignette();
 // ---------------------------------------------------------------------------
 const teleportRaycaster = new THREE.Raycaster();
 const teleportSurfaces = [floor];
+// Declared before the arc geometry below, which sizes its position buffer
+// from it at module-load time (const is TDZ until its declaration line).
+const ARC_SEGMENTS = 24;
+const arcPoints = [];
+for (let i = 0; i <= ARC_SEGMENTS; i++) arcPoints.push(new THREE.Vector3());
 // NOTE: plain BufferGeometry has no setPositions() (that's LineGeometry) — v1
 // called it and would have thrown on the first aim. Preallocate a max-size
-// position attribute and update it per frame via setAttribute/copyInto instead.
+// position attribute and update it per frame via setXYZ instead.
 const teleportArcGeo = new THREE.BufferGeometry();
 teleportArcGeo.setAttribute(
   'position',
@@ -115,10 +120,6 @@ const _tmpMat4 = new THREE.Matrix4();
 const _tmpVec3 = new THREE.Vector3();
 const _moveVec = new THREE.Vector3();
 const _headForward = new THREE.Vector3();
-
-const ARC_SEGMENTS = 24;
-const arcPoints = [];
-for (let i = 0; i <= ARC_SEGMENTS; i++) arcPoints.push(new THREE.Vector3());
 
 // ---------------------------------------------------------------------------
 // Offset reference-space management.
