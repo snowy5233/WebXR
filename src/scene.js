@@ -6,7 +6,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-export const renderer = new THREE.WebGLRenderer({ antialias: true, xrCompatible: true });
+// alpha: true is REQUIRED for immersive-ar passthrough: the compositor
+// composites the GL framebuffer over the camera feed via its alpha channel.
+// With an opaque context, a null scene.background clears to opaque black and
+// the passthrough can never show — an all-black AR view (VR is unaffected).
+// It must be set in the constructor: the GL context's alpha is fixed at
+// creation and cannot be enabled afterwards.
+export const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, xrCompatible: true });
+// Clear to fully transparent so AR frames composite over the camera feed.
+renderer.setClearAlpha(0);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;

@@ -136,14 +136,24 @@ function applyLocomotionOffset(x, z) {
   renderer.xr.setReferenceSpace(offsetSpace);
 }
 
+// Teleport: instantly move the player so the spot they aimed at ends up
+// under their head.
+//
+// SIGN CONVENTION (subtle, and previously inverted — the cause of
+// "teleports backwards"): Three.js renders the camera at the viewer pose
+// expressed in the CURRENT (offset) reference space, while scene content
+// stays in base coordinates. So the rendered head position is
+//   renderedHead = trueHeadBase - offsetTranslation.
+// To place the rendered head at `target`, the offset must be
+//   offset = trueHeadBase - target.
+// The true base-space head position is recovered from the rendered one:
+//   trueHeadBase = renderedCamPos + currentOffset.
+// Hence: newOffset = renderedCamPos + oldOffset - target.
 function teleportTo(targetX, targetZ) {
   if (!baseReferenceSpace) return;
-  // Head base-space position = camera world pos - tracked player offset.
   camera.getWorldPosition(_tmpVec3);
-  const headBaseX = _tmpVec3.x - playerOffsetX;
-  const headBaseZ = _tmpVec3.z - playerOffsetZ;
-  playerOffsetX = playerOffsetX + (targetX - headBaseX);
-  playerOffsetZ = playerOffsetZ + (targetZ - headBaseZ);
+  playerOffsetX = _tmpVec3.x + playerOffsetX - targetX;
+  playerOffsetZ = _tmpVec3.z + playerOffsetZ - targetZ;
   applyLocomotionOffset(playerOffsetX, playerOffsetZ);
 }
 
@@ -241,8 +251,10 @@ export function updateLocomotion(dt) {
       const len = Math.hypot(dx, dz);
       if (len > 0) {
         const step = SMOOTH_SPEED * dt;
-        playerOffsetX += (dx / len) * step * Math.min(1, len);
-        playerOffsetZ += (dz / len) * step * Math.min(1, len);
+        // Subtract, not add: renderedHead = trueHead - offset, so to move the
+        // rendered head in +d the offset must decrease by d (see teleportTo).
+        playerOffsetX -= (dx / len) * step * Math.min(1, len);
+        playerOffsetZ -= (dz / len) * step * Math.min(1, len);
         applyLocomotionOffset(playerOffsetX, playerOffsetZ);
         vignetteIntensity = 1;
       }
