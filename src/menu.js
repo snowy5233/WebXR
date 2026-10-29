@@ -13,18 +13,16 @@
 
 import * as THREE from 'three';
 import { renderer, scene, camera } from './scene.js';
-import {
-  LOCOMOTION_TELEPORT, LOCOMOTION_SMOOTH,
-  getLocomotionMode, setLocomotionMode,
-} from './locomotion.js';
-import { resetGrabbables } from './objects.js';
+import { cycleShape, getShapeLabel } from './ar.js';
+import { clearParts } from './ar.js';
 
 const PANEL_W = 0.5;
 const PANEL_H = 0.35;
+// Menu rows: Shape cycle, Clear parts, Exit AR.
 const ROWS = [
-  { id: 'locomotion', label: () => 'Locomotion: ' + (getLocomotionMode() === LOCOMOTION_TELEPORT ? 'Teleport' : 'Smooth') },
-  { id: 'reset', label: () => 'Reset objects' },
-  { id: 'exit', label: () => 'Exit VR' },
+  { id: 'shape', label: () => 'Shape: ' + getShapeLabel() },
+  { id: 'clear', label: () => 'Clear parts' },
+  { id: 'exit', label: () => 'Exit AR' },
 ];
 
 let panel = null;
@@ -113,13 +111,12 @@ function rowHit(localY) {
 function activateRow(rowIndex) {
   const row = ROWS[rowIndex];
   if (!row) return;
-  if (row.id === 'locomotion') {
-    setLocomotionMode(
-      getLocomotionMode() === LOCOMOTION_TELEPORT ? LOCOMOTION_SMOOTH : LOCOMOTION_TELEPORT
-    );
+  if (row.id === 'shape') {
+    cycleShape();
     drawPanel();
-  } else if (row.id === 'reset') {
-    resetGrabbables();
+  } else if (row.id === 'clear') {
+    clearParts();
+    drawPanel();
   } else if (row.id === 'exit') {
     const session = renderer.xr.getSession();
     if (session) session.end().catch(() => {});

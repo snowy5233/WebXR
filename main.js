@@ -1,38 +1,29 @@
-// Bootstrap + WebXR session lifecycle (VR and AR).
+// Bootstrap + WebXR session lifecycle (AR-only).
 //
 // This is the part that is easy to get subtly wrong, so it is spelled out
 // step by step. We use navigator.xr directly for capability checks and
 // session creation, then hand the session to Three.js's renderer.xr manager
 // so it can apply the headset pose and projection each frame.
 //
-// Session feature requests:
-//   VR: optionalFeatures ['local-floor', 'bounded-floor']
-//   AR: requiredFeatures ['hit-test', 'local-floor'],
-//       optionalFeatures ['hand-tracking', 'dom-overlay']
+// Session features: requiredFeatures ['hit-test', 'local-floor'],
+// optionalFeatures ['hand-tracking', 'dom-overlay'].
 //
-// NOTE: 'hand-tracking' is NOT requested for VR — on the Quest 3 browser it
-// stalls requestSession indefinitely (see startSession). If the runtime
-// still exposes hand input sources, controllers.js/hands.js handle them.
-//
-// hand-tracking IS requested now (unlike v1): hands are handled via
-// renderer.xr.getHand() with their own visual (hands.js), and the controller
-// model is hidden for hand input sources (controllers.js 'connected'), so the
-// v1 "frozen model" bug can no longer occur.
+// Input map (AR-only app):
+//   trigger -> place a part at the reticle (shape chosen in the menu)
+//   grip    -> pick up / move a placed part; release drops it
+//   thumbstick -> smooth locomotion
+//   A/X     -> open/close the menu (Shape / Clear parts / Exit AR)
+//   B/Y     -> cycle placement shape
 
 import * as THREE from 'three';
 import { renderer, scene, camera, controls } from './src/scene.js';
 import { installGlobalErrorHandlers, setDebugText } from './src/debug.js';
 import { showDiagnostics, hideDiagnostics, updateDiagnostics, reportLoopError } from './src/diagnostics.js';
-import { controllerData, pollGamepads, inputCallbacks, squeezeCallbacks, updateHover } from './src/controllers.js';
+import { controllerData, pollGamepads, inputCallbacks, raycastFromController } from './src/controllers.js';
 import { setupHands } from './src/hands.js';
-import {
-  LOCOMOTION_TELEPORT, LOCOMOTION_SMOOTH, getLocomotionMode, setLocomotionMode,
-  captureBaseReferenceSpace, clearBaseReferenceSpace,
-  updateLocomotion, handleSqueeze, resetLocomotionVisuals, getPlayerOffset,
-} from './src/locomotion.js';
-import { cube, updatePhysics, resetGrabbables, anyGrabbedBy } from './src/objects.js';
+import { updateLocomotion, captureBaseReferenceSpace, clearBaseReferenceSpace, resetLocomotionVisuals, getPlayerOffset } from './src/locomotion.js';
 import { toggleMenu, closeMenu, updateMenu } from './src/menu.js';
-import { startARHitTest, updateAR, placeMarker, enterARVisuals, exitARVisuals, isARActive, captureDefaultBackground } from './src/ar.js';
+import { startARHitTest, updateAR, placePart, gripStart, gripEnd, cycleShape, enterARVisuals, exitARVisuals, captureDefaultBackground } from './src/ar.js';
 
 installGlobalErrorHandlers();
 setupHands();
@@ -41,23 +32,21 @@ captureDefaultBackground();
 const overlay = document.getElementById('overlay');
 const statusMessage = document.getElementById('status-message');
 const buttonContainer = document.getElementById('vr-button-container');
-const locomotionToggleContainer = document.getElementById('locomotion-toggle-container');
 
 let currentSession = null;
 let lastTimestamp = 0;
 let lastConsoleDiag = 0;
 let loggedFirstXRFrame = false;
-let lastARMode = false;
 // Controller slots whose trigger was pressed this frame (for menu clicks).
 const selectPresses = new Set();
+// Parts currently held via grip, by grab root — guards the AR-placement
+// path so a trigger while holding a part doesn't also place one.
+const heldParts = new Map();
 
 function setStatus(text) {
   statusMessage.textContent = text;
 }
 
-// ---------------------------------------------------------------------------
-// Overlay buttons: Enter VR / Enter AR + locomotion toggle.
-// ---------------------------------------------------------------------------
 function makeButton(id, text, onClick) {
   const btn = document.createElement('button');
   btn.id = id;
@@ -67,43 +56,30 @@ function makeButton(id, text, onClick) {
 }
 
 // ---------------------------------------------------------------------------
-// Capability checks + overlay wiring.
+// Capability check + overlay button (AR only).
 // ---------------------------------------------------------------------------
 async function init() {
   if (!('xr' in navigator)) {
-    setStatus('WebXR is not supported in this browser. Showing a flat 3D preview. Try the Meta Quest 3 browser or a WebXR-enabled desktop browser.');
+    setStatus('WebXR is not supported in this browser. Showing a flat 3D preview. Try the Meta Quest 3 browser over HTTPS.');
     return;
   }
   try {
-    const vrSupported = await navigator.xr.isSessionSupported('immersive-vr');
     let arSupported = false;
     try { arSupported = await navigator.xr.isSessionSupported('immersive-ar'); } catch (_) {}
     buttonContainer.innerHTML = '';
-    if (vrSupported) buttonContainer.appendChild(makeButton('enter-vr-btn', 'Enter VR', () => startSession('immersive-vr')));
-    if (arSupported) buttonContainer.appendChild(makeButton('enter-ar-btn', 'Enter AR', () => startSession('immersive-ar')));
-    if (vrSupported || arSupported) {
-      setStatus('Ready. Put on your headset and press Enter VR (or Enter AR for passthrough).');
+    if (arSupported) {
+      buttonContainer.appendChild(makeButton('enter-ar-btn', 'Enter AR', () => startSession()));
+      setStatus('Ready. Put on your headset and press Enter AR.');
     } else {
-      setStatus('WebXR is present but immersive sessions are not supported on this device. Showing a flat 3D preview.');
+      setStatus('Immersive AR is not supported on this device. Showing a flat 3D preview.');
     }
   } catch (error) {
     setStatus('Could not query WebXR support: ' + error.message);
   }
-
-  // Desktop locomotion toggle (also usable pre-VR).
-  const toggleBtn = makeButton('locomotion-toggle-btn', '', () => {
-    setLocomotionMode(getLocomotionMode() === LOCOMOTION_TELEPORT ? LOCOMOTION_SMOOTH : LOCOMOTION_TELEPORT);
-    updateToggleLabel();
-  });
-  locomotionToggleContainer.appendChild(toggleBtn);
-  function updateToggleLabel() {
-    toggleBtn.textContent = 'Locomotion: ' + (getLocomotionMode() === LOCOMOTION_TELEPORT ? 'Teleport' : 'Smooth') + ' (click to switch)';
-  }
-  updateToggleLabel();
 }
 
 // ---------------------------------------------------------------------------
-// Session start/end with per-step timeouts (unchanged pattern from v1).
+// Session start/end with per-step timeouts (a silent hang is the worst UX).
 // ---------------------------------------------------------------------------
 const STEP_TIMEOUT_MS = 10000;
 function withTimeout(promise, label) {
@@ -121,42 +97,28 @@ function showError(message) {
   overlay.classList.remove('hidden');
 }
 
-async function startSession(mode) {
+async function startSession() {
   if (currentSession) return;
-  console.log('[WebXR] step 1: requestSession start', mode);
+  console.log('[WebXR] step 1: requestSession start (immersive-ar)');
   let session;
   try {
-    if (mode === 'immersive-ar') {
-      session = await withTimeout(
-        navigator.xr.requestSession('immersive-ar', {
-          requiredFeatures: ['hit-test', 'local-floor'],
-          optionalFeatures: ['hand-tracking', 'dom-overlay'],
-          domOverlay: { root: overlay },
-        }),
-        'requestSession'
-      );
-    } else {
-      session = await withTimeout(
-        navigator.xr.requestSession('immersive-vr', {
-          // Keep the VR request to the known-good v1 feature set. Requesting
-      // 'hand-tracking' here stalled requestSession indefinitely on the
-      // Quest 3 browser (the runtime appears to wait on the hand-tracking
-      // permission/switch flow before resolving). Hands are still supported:
-      // if the runtime reports hand sources anyway, hands.js handles them.
-      optionalFeatures: ['local-floor', 'bounded-floor'],
-        }),
-        'requestSession'
-      );
-    }
+    session = await withTimeout(
+      navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test', 'local-floor'],
+        optionalFeatures: ['hand-tracking', 'dom-overlay'],
+        domOverlay: { root: overlay },
+      }),
+      'requestSession'
+    );
   } catch (error) {
     showError('requestSession failed: ' + error.message);
     return;
   }
   console.log('[WebXR] step 1: requestSession OK', session && session.enabledFeatures);
-  await onSessionStarted(session, mode);
+  await onSessionStarted(session);
 }
 
-async function onSessionStarted(session, mode) {
+async function onSessionStarted(session) {
   currentSession = session;
   controls.enabled = false;
   session.addEventListener('end', onSessionEnded);
@@ -177,23 +139,16 @@ async function onSessionStarted(session, mode) {
   captureBaseReferenceSpace();
   renderer.xr.setReferenceSpace(null);
 
-  if (mode === 'immersive-ar') {
-    // AR passthrough: transparent background, hide the VR environment, start
-    // hit-testing for the placement reticle. Teleport is disabled in AR, so
-    // pin the session to smooth locomotion from the start.
-    enterARVisuals();
-    startARHitTest(session);
-    setLocomotionMode(LOCOMOTION_SMOOTH);
-  }
+  // AR passthrough: transparent background, hide the flat-preview
+  // environment, start hit-testing for the placement reticle.
+  enterARVisuals();
+  startARHitTest(session);
 
-  resetGrabbables();
   overlay.classList.add('hidden');
   // In-world status panel: shows session state, and crucially any per-frame
   // error, readable INSIDE the headset (the DOM overlay is invisible there).
-  showDiagnostics(mode === 'immersive-ar' ? 'AR ready. Trigger places markers.' : 'VR ready. Trigger grabs; A/X menu.');
-  setStatus(mode === 'immersive-ar'
-    ? 'In AR. Trigger places a marker on real surfaces.'
-    : 'In VR. Trigger grabs objects / cycles the cube; A/X opens the menu.');
+  showDiagnostics('AR ready. Trigger places; grip moves parts; A/X menu.');
+  setStatus('In AR. Trigger places a part at the reticle; grip moves placed parts.');
 }
 
 function onSessionEnded() {
@@ -204,52 +159,57 @@ function onSessionEnded() {
   renderer.xr.setReferenceSpace(null);
   clearBaseReferenceSpace();
   resetLocomotionVisuals();
-  exitARVisuals();
   closeMenu();
+  exitARVisuals();
   hideDiagnostics();
-  resetGrabbables();
+  heldParts.clear();
   controls.enabled = true;
   controls.update();
   loggedFirstXRFrame = false;
   overlay.classList.remove('hidden');
-  setStatus('Exited XR. Press a button to re-enter.');
+  setStatus('Exited AR. Press Enter AR to re-enter.');
 }
 
 // ---------------------------------------------------------------------------
-// In-VR input wiring.
+// In-headset input wiring.
 // ---------------------------------------------------------------------------
 inputCallbacks.onAButton = () => toggleMenu();
-inputCallbacks.onBButton = () => {
-  // Teleport is disabled in AR (it only shifts virtual content relative to
-  // the real room), so in AR keep the mode pinned to smooth.
-  if (isARActive()) return;
-  setLocomotionMode(getLocomotionMode() === LOCOMOTION_TELEPORT ? LOCOMOTION_SMOOTH : LOCOMOTION_TELEPORT);
-  console.log('[locomotion] mode ->', getLocomotionMode());
-};
-squeezeCallbacks.onSqueeze = (data) => handleSqueeze(data);
+inputCallbacks.onBButton = () => cycleShape();
 
-// Menu clicks and AR placement reuse the controller 'selectstart';
-// controllers.js dispatches grab/cube actions first (and those raycasts skip
-// the menu panel), so we observe the raw events here too.
+// Grip: pick up a placed part under the ray; release drops it. Hands have a
+// null gripSpace so they use the ray controller object as the grab root.
 for (const data of controllerData) {
   if (!data) continue;
   data.controller.addEventListener('selectstart', () => {
     selectPresses.add(data);
-    // AR mode: place a marker only when the trigger didn't grab an object
-    // (controllers.js dispatches grab/cube first on the same event).
-    if (isARActive() && !anyGrabbedBy(data.controllerGrip) && !anyGrabbedBy(data.controller)) placeMarker();
+    // Trigger places a part only when not currently holding one via grip.
+    if (!heldParts.has(data.controllerGrip) && !heldParts.has(data.controller)) {
+      const hit = raycastFromController(data);
+      if (!hit || !hit.object.userData.movable) placePart();
+    }
   });
   data.controller.addEventListener('selectend', () => selectPresses.delete(data));
+  data.controller.addEventListener('squeezestart', () => {
+    const hit = raycastFromController(data);
+    const root = data.isHand ? data.controller : data.controllerGrip;
+    if (hit && gripStart(root, hit)) heldParts.set(root, data);
+  });
+  data.controller.addEventListener('squeezeend', () => {
+    const root = data.isHand ? data.controller : data.controllerGrip;
+    if (heldParts.has(root)) {
+      gripEnd(root);
+      heldParts.delete(root);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Render loop.
 // ---------------------------------------------------------------------------
-// Isolate each XR subsystem in its own try/catch: a throw in one subsystem
-// must NEVER skip renderer.render() — in XR that submits no frame to the
-// compositor and the headset shows a permanent BLACK SCREEN. Errors are
-// reported to the in-world diagnostics panel (readable in-headset) and the
-// console; rendering always continues.
+// Isolate each subsystem in its own try/catch: a throw in one subsystem must
+// NEVER skip renderer.render() — in XR that submits no frame to the
+// compositor and the headset shows a permanent BLACK SCREEN. Errors go to the
+// in-world diagnostics panel (readable in-headset); rendering always continues.
 function tryStep(label, fn) {
   try {
     fn();
@@ -265,7 +225,6 @@ function animate(timestamp, frame) {
 
   const isPresenting = renderer.xr.isPresenting;
   if (!isPresenting) tryStep('controls', () => controls.update());
-  tryStep('cube', () => { cube.rotation.y += 0.005; });
 
   if (isPresenting) {
     tryStep('gamepads', () => pollGamepads());
@@ -274,21 +233,18 @@ function animate(timestamp, frame) {
     tryStep('menu', () => updateMenu(controllerData, selectPresses));
     tryStep('diagPanel', () => updateDiagnostics());
   }
-  tryStep('hover', () => updateHover());
-  tryStep('physics', () => updatePhysics(dt));
 
   if (isPresenting && !loggedFirstXRFrame) {
     loggedFirstXRFrame = true;
     console.log('[WebXR] step 3: first XR-presenting frame rendered');
   }
 
-  // Diagnostics overlay.
   const session = renderer.xr.getSession();
   const features = session && session.enabledFeatures ? session.enabledFeatures.join(',') : 'none';
   const offset = getPlayerOffset();
   const dbgLines = [
     `presenting=${isPresenting} mode=${session ? session.environmentBlendMode : '-'} xr.enabled=${renderer.xr.enabled} feats=${features}`,
-    `locomotion=${getLocomotionMode()} player=(${offset.x.toFixed(2)},${offset.z.toFixed(2)})`,
+    `player=(${offset.x.toFixed(2)},${offset.z.toFixed(2)})`,
   ];
   for (const data of controllerData) {
     if (!data) continue;

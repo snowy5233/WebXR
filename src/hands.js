@@ -10,8 +10,8 @@
 // module shows the hand mesh instead. The WebXR runtime fires 'select'
 // (pinch) on the hand's target-ray space, and Three.js dispatches it on the
 // same controller slot object, so hands reuse the identical grab/select
-// bindings as controllers with zero extra wiring: pinch to grab a grabbable,
-// pinch at the cube to cycle its color.
+// bindings as controllers with zero extra wiring: pinch to place a part,
+// pinch at a placed part while gripping (squeeze) to move it.
 //
 // NOTE: createHandModel registers its own 'connected' listener on the hand
 // object and builds the joint meshes when that event fires — so it MUST be

@@ -1,82 +1,65 @@
-# WebXR Quest 3 Demo
+# WebXR Quest 3 AR Sandbox
 
-A browser-based WebXR experience for the Meta Quest 3, built with
+A browser-based **AR passthrough** experience for the Meta Quest 3, built with
 vanilla JavaScript + [Three.js](https://threejs.org/) + the
 [WebXR Device API](https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API).
+Place shapes on your real surfaces, pick them up and move them around, and
+wander with smooth locomotion.
 
-No build step. Open `index.html` through a local static server (or the
-published Pages URL below) and it runs.
+No build step. Open the published URL (below) in the Meta Quest Browser.
 
-## Features (v2)
+## Features (v3)
 
-- A Three.js scene with a procedurally textured floor, gradient skybox,
-  decorative pedestals, and basic lighting (no shadows — Quest 3 budget).
-- **Enter VR** and **Enter AR** buttons using `navigator.xr`, with proper
-  `immersive-vr` / `immersive-ar` session requests and a render loop bound
-  via `renderer.setAnimationLoop` (which Three.js binds to the XRSession's
-  `requestAnimationFrame` while in XR).
-- Quest 3 controller support: controller models via Three.js's
-  `XRControllerModelFactory`, plus ray-casting from each controller for
-  pointing/selecting.
-- **Hand tracking**: with `hand-tracking` requested as an optional feature,
-  hand input sources get a sphere-per-joint visual via `XRHandModelFactory`
-  (`renderer.xr.getHand()`), while the vendor controller model is hidden for
-  hand sources (their `gripSpace` is null). Pinch fires the same `select`
-  event as the trigger, so grabbing works identically with hands.
-- **Grabbable objects + physics**: five objects (boxes, balls, an
-  icosahedron) you can grab with the trigger and throw — release velocity is
-  computed from the hold-pose history. A tiny custom physics step (gravity,
-  floor bounce with restitution/friction, edge clamping, sleep) keeps them
-  believable with zero dependencies and negligible CPU.
-- One interactive cube that cycles color when triggered (with a hover
-  highlight for feedback), unchanged from v1.
-- **In-VR menu**: press **A/X** to open a world-space panel with clickable
-  rows (Locomotion toggle, Reset objects, Exit VR), driven by the same
-  controller rays.
-- **AR passthrough** (Quest 3): `immersive-ar` session with `hit-test`; the
-  reticle follows real surfaces and the trigger places a marker. The DOM
-  overlay is reused as a `dom-overlay` root.
-- Graceful fallback message when WebXR is not supported (e.g. on a desktop
-  browser), with a flat 3D preview you can orbit.
-- **Locomotion** (switchable at runtime; defaults to teleport):
-  - **Teleport**: parabolic arc + target ring; confirm with the **grip**
-    (squeeze) button to jump there instantly (comfort-mode).
-  - **Smooth**: push a **thumbstick** to move relative to head-forward, with
-    a comfort vignette that narrows the FOV while moving.
-  - Switch with the in-VR menu, **B/Y** quick-toggle, or the desktop button.
-  - Locomotion moves the player via an offset **reference space** (not the
-    camera), so it composes cleanly with the `local-floor` space and never
-    fights head tracking.
+- **AR-only**: `immersive-ar` session with passthrough camera feed composited
+  over the WebGL scene (alpha-enabled context, `hit-test`, `dom-overlay`).
+- **Part placement**: point at a real surface — a translucent ghost preview
+  shows where the part will land — and pull the trigger to place it.
+- **Shape menu**: cycle Box / Ball / Star / Pillar with **B/Y**, or via the
+  in-headset menu (**A/X**). The ghost preview updates to match.
+- **Move parts with grip**: squeeze the grip button while pointing at a
+  placed part to pick it up; release to drop it where you like.
+- **In-headset menu** (**A/X**): Shape cycle, Clear parts, Exit AR — clicked
+  with the controller ray.
+- **Smooth locomotion** (thumbstick, head-relative, comfort vignette).
+  Teleport was removed with the VR mode.
+- **Hand tracking**: hand input sources get a sphere-per-joint visual;
+  the vendor controller model is hidden for hands (their `gripSpace` is
+  null). Pinch fires the same select as the trigger.
+- **In-headset diagnostics**: a world-space panel follows the head while
+  presenting, showing live status — and, crucially, any per-frame error,
+  so failures are readable inside the headset instead of a mystery black
+  screen.
+- Graceful desktop fallback: a flat 3D preview with a clear message when
+  `immersive-ar` is unsupported.
 
-## Input bindings (v2)
+## Input bindings
 
 | Action | Input |
 | --- | --- |
-| Grab / drop (throw) object, cycle cube color, place AR marker | **trigger** (`select`) |
-| Teleport confirm | controller **grip/squeeze** button |
-| Smooth move | controller **thumbstick** (x = strafe, y = forward) |
-| Open/close in-VR menu | right controller **A/X** button |
-| Quick locomotion toggle | right controller **B/Y** button, or the desktop toggle |
+| Place a part at the reticle | **trigger** (`select`) |
+| Pick up / move a placed part | **grip** (squeeze) — release to drop |
+| Smooth move | **thumbstick** (x = strafe, y = forward) |
+| Open/close the menu | right controller **A/X** |
+| Cycle placement shape | right controller **B/Y**, or the menu |
 
-The trigger's meaning is disambiguated by what the ray hits first: a
-grabbable → grab; the cube → color cycle; the menu panel → menu click; in AR
-mode with no object hit → place a marker. Grab always takes priority, so the
-bindings never conflict.
+The trigger only places a part when you're not currently holding one via
+grip, so the bindings never conflict.
 
 ## Project structure
 
 ```
-index.html        # Markup, overlay/fallback UI, Three.js import map, bootstrap
-main.js           # WebXR session lifecycle (VR + AR) and the render loop
-src/scene.js      # Renderer, scene, camera, lights, procedural textures/skybox
-src/objects.js    # Interactive cube, grabbable objects, tiny physics step
-src/controllers.js# Controller setup, ray-casting, gamepad polling, input dispatch
-src/hands.js      # Hand-tracking visuals via XRHandModelFactory
-src/locomotion.js # Teleport + smooth locomotion, offset reference spaces
-src/menu.js       # In-VR world-space menu panel
-src/ar.js         # Immersive-AR passthrough, hit-test, marker placement
-style.css         # Overlay/fallback UI styling
-README.md         # This file
+index.html           # Markup, overlay/fallback UI, Three.js import map
+main.js              # AR session lifecycle and the render loop
+src/scene.js         # Renderer, scene, camera, lights, procedural environment
+src/controllers.js   # Controller setup, ray-casting, gamepad polling
+src/hands.js         # Hand-tracking visuals via XRHandModelFactory
+src/locomotion.js    # Smooth locomotion via offset reference spaces
+src/menu.js          # In-headset menu panel (shape / clear / exit)
+src/ar.js            # AR parts: shapes, hit-test reticle, preview, grip-move
+src/diagnostics.js   # In-headset status/error panel
+src/debug.js         # DOM debug overlay + global error handlers
+style.css            # Overlay/fallback UI styling
+README.md            # This file
 ```
 
 Three.js is loaded from a CDN via an
@@ -86,112 +69,82 @@ The `src/` modules use plain ES-module imports — still no build step.
 
 ## Run it
 
-The site is published via **GitHub Pages** at:
+Published via **GitHub Pages** (HTTPS, which WebXR requires):
 
 > <https://snowy5233.github.io/WebXR/>
 
-This is an HTTPS origin, which is what WebXR requires (WebXR only works in a
-secure context — `https://` or `http://localhost`). No local server needed.
+- **Meta Quest 3:** open the **Meta Quest Browser**, navigate to the URL,
+  and tap **Enter AR**. Look at a surface — the ghost preview follows the
+  reticle — and pull the trigger to place a part. Grip picks up a placed
+  part; release drops it. **A/X** opens the menu; **B/Y** cycles shapes.
+- **Desktop:** you'll get the flat 3D preview and a message that immersive
+  AR isn't supported; that's expected (AR needs a headset with passthrough).
 
-- **Desktop:** open the URL in a WebXR-capable browser (e.g. Chrome). Without
-  a headset you'll get the flat 3D preview and a fallback message; that's
-  expected. To test the immersive paths themselves you need a WebXR device.
-- **Meta Quest 3:** open the **Meta Quest Browser**, navigate to the URL
-  above, and tap **Enter VR** (or **Enter AR** for passthrough).
-  - Trigger grabs objects; point at the cube and trigger to cycle its color.
-  - **A/X** opens the in-VR menu; **B/Y** quick-toggles locomotion.
-  - Teleport (default): point at the floor, press **grip**. Smooth: push the
-    thumbstick.
-  - In AR: point at a real surface and pull the trigger to place a marker.
-  - Hand tracking: put the controllers down — pinch to grab/select.
+### Run locally instead
 
-## Optional: run locally instead
-
-If you'd rather run from your own machine (e.g. to test an unmerged branch),
-serve the files over a local static server — WebXR requires `https://` or
-`localhost`, so don't open the file directly:
+WebXR requires `https://` or `localhost`:
 
 ```bash
-# Python 3 (no install needed on most systems)
-python3 -m http.server 8000
-
-# or Node.js
-npx serve .
+python3 -m http.server 8000   # or: npx serve .
 ```
 
-Then open `http://localhost:8000/` on desktop. To reach the same server from
-the Quest 3 you must use **HTTPS** (a plain `http://<your-laptop-ip>:8000`
-URL will not work in the headset). The simplest way is a tunnel such as
-[`ngrok`](https://ngrok.com/) or Cloudflare Tunnel:
-
-```bash
-ngrok http 8000
-```
-
-Use the resulting `https://*.ngrok-free.app` URL in the Quest 3 browser.
+For the Quest 3 to reach your machine you need HTTPS — the simplest is a
+tunnel such as [ngrok](https://ngrok.com/) (`ngrok http 8000`) or Cloudflare
+Tunnel, then open the `https://…` URL in the Quest browser.
 
 ## Performance notes (Quest 3)
 
-- Minimal draw calls: skybox + floor + grid + a few shared-material objects +
-  two lights + controller/hand models. Shadows are disabled.
-- All textures are generated procedurally on canvas (gradient skybox, floor
-  checker) — no downloads, tiny memory. If photographic textures are added
-  later, prefer small compressed formats (KTX2/BasisU) and reuse materials.
-- The physics step is a handful of vector ops per object; objects sleep when
-  at rest, so idle frames cost nearly nothing.
+- Minimal draw calls: passthrough (no background), a few shared-material
+  parts, two lights, controller/hand models, hit-test reticle + ghost.
+  Shadows are disabled.
+- Part geometries and materials are shared across all placed parts; the
+  ghost preview reuses the same geometry.
+- All textures are procedural canvases (vignette gradient, menu, diagnostics,
+  flat-preview floor/sky) — no downloads.
 - `renderer.setAnimationLoop` drives the loop, which Three.js binds to the
   XRSession vsync while in XR.
+- Robust frame submission: each subsystem is isolated in try/catch and
+  `renderer.render()` always runs — a subsystem error can never produce a
+  black screen (it's reported on the in-headset panel instead).
 
-## Debug overlay
+## Debugging in-headset
 
-A small text panel (top-left of the flat page, also visible in-headset)
-reports live per-frame state: `xr.enabled`, the resolved session features and
-`environmentBlendMode` (so you can confirm VR vs AR), the active `locomotion`
-mode, the player offset, and each controller slot's ray pose, hand-source
-flag, and model visibility. It exists to diagnose XR lifecycle issues (head
-tracking, controller/hand poses, session start); leave it in place unless you
-are sure a change is unrelated.
+The in-world diagnostics panel (bottom of view while presenting) shows the
+session state and the last per-frame error with the failing subsystem name.
+The DOM overlay (top-left on the flat page) shows the same live state for
+desktop runs. Leave both in place unless a change is definitely unrelated.
 
-## Known WebXR gotchas in this codebase
+## Known WebXR gotchas preserved here
 
-A few non-obvious things that have already caused bugs here and are worth
-preserving:
+- **`renderer.xr.enabled = true` is required** or head tracking does nothing
+  (`src/scene.js`).
+- **Alpha context for AR**: `alpha: true` must be in the WebGLRenderer
+  constructor — the AR compositor overlays the framebuffer on the camera feed
+  via alpha; an opaque context is an all-black AR view. It cannot be enabled
+  after construction.
+- **`scene.background = null` during AR**, and restore it on exit, or the
+  passthrough hides behind the opaque clear.
+- **Locomotion sign convention**: Three.js renders the head at
+  `trueHead − offsetTranslation`, so moving the rendered head in +d means
+  DECREASING the offset by d. An inverted sign teleports/moves you backwards.
+- **Hand input sources have a null `gripSpace`**: hide the vendor controller
+  model for them and use the target-ray controller object as the grab root.
+- **`createHandModel` must be called at setup time** — it builds its meshes
+  from the hand's `connected` event and misses it if called inside that
+  handler.
+- **Never skip `renderer.render()` in XR** — no frame submitted means a
+  permanent black screen. Hence the per-subsystem try/catch isolation.
+- **Hit-test sources** must be created from a `viewer` reference space and
+  cancelled on session end; failures degrade to "AR without reticle".
 
-- **`renderer.xr.enabled = true` is required.** `WebXRManager.enabled`
-  defaults to `false`; without it `render()` keeps using the flat desktop
-  camera even while presenting, so head tracking does nothing and the view is
-  locked ~3m back. Set it before presenting (see `src/scene.js`).
-- **Do not call `OrbitControls.update()` while presenting.** It is bound to
-  the same camera WebXRManager drives with the headset pose and would
-  overwrite that pose. It's gated on `!renderer.xr.isPresenting` in the
-  render loop.
-- **Locomotion moves an offset reference space, not the camera.** The headset
-  pose is applied on top of whatever reference space `renderer.xr` resolves
-  against, so changing that space moves the player without fighting head
-  tracking (see `src/locomotion.js`).
-- **Hand input sources have a null `gripSpace`.** Three.js only writes the
-  grip group's matrix when `gripSpace` is non-null, so a hand source on a
-  controller slot leaves the vendor model frozen while the ray still tracks.
-  v2 handles this explicitly: the controller model is hidden for hand
-  sources (`src/controllers.js`) and hands get their own visual via
-  `renderer.xr.getHand()` + `XRHandModelFactory` (`src/hands.js`). Note that
-  `createHandModel` must be called at setup time — it builds its meshes from
-  the hand's `connected` event, which it would miss if called from inside
-  that event.
-- **AR sessions need `scene.background = null`** (plus hidden skybox/floor)
-  or the passthrough camera feed is hidden behind the opaque background.
-- **Hit-test sources must be created before the session ends** and cancelled
-  on exit; `getHitTestResults` needs the *current* frame's reference space.
+## Multiplayer (planned)
 
-## Multiplayer (planned, not in v2)
-
-Networked multiplayer requires a signaling/state-sync backend and does not
-fit a static GitHub Pages site. It will be added once this project moves to a
-self-hosted server (WebRTC or WebSocket state sync), at which point
-`src/objects.js` (physics) and `src/locomotion.js` (player offset) already
-expose the per-frame state a sync layer would need to serialize.
+Networked multiplayer requires a signaling/state-sync backend and doesn't
+fit a static GitHub Pages site. It will be added once this project moves to
+a self-hosted server. `src/ar.js` (parts) and `src/locomotion.js` (player
+offset) already expose the per-frame state a sync layer would serialize.
 
 ## Iterating
 
-This scaffold is intentionally small. Next steps: server-backed multiplayer,
-haptics on grab/bounce, snap-turn, and audio.
+Next steps: server-backed multiplayer, haptics on grab/place, part rotation
+while held, audio feedback.

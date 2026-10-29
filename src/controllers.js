@@ -1,14 +1,11 @@
 // Controller setup, ray-casting, and input dispatch.
 //
 // Input bindings (deliberately distinct so nothing conflicts):
-//   trigger ('select')  -> grab a grabbable under the ray, else cycle the
-//                          interactive cube's color
-//   release trigger     -> drop held object (with throw velocity)
-//   grip ('squeeze')    -> confirm teleport (teleport mode only)
-//   thumbstick          -> smooth locomotion
-//   A/X (button 2, R)    -> open/close the in-VR menu (was locomotion toggle;
-//                          locomotion now lives in the menu)
-//   B/Y (button 3, R)   -> teleport/smooth quick toggle
+//   trigger ('select')  -> place a part at the reticle (AR placement)
+//   grip ('squeeze')    -> pick up / move a placed part; release drops it
+//   thumbstick          -> smooth locomotion (the only mode; teleport removed)
+//   A/X (button 2, R)    -> open/close the in-headset menu
+//   B/Y (button 3, R)   -> cycle the placement shape
 //
 // Hands: when a hand input source appears, the controller model is hidden and
 // a hand mesh (see hands.js) is shown instead. Hands support the same
@@ -17,7 +14,7 @@
 import * as THREE from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { renderer, scene } from './scene.js';
-import { interactables, cube, cycleCubeColor, endCubeFlash, setCubeHover, tryGrab, releaseGrab } from './objects.js';
+import { placedTargets } from './ar.js';
 
 const controllerModelFactory = new XRControllerModelFactory();
 export const controllerData = [];
@@ -53,9 +50,8 @@ function setupController(index) {
   const data = { controller, controllerGrip, rayLine, model, index, handMesh: null, isHand: false };
   controllerData[index] = data;
 
-  controller.addEventListener('selectstart', () => onSelectStart(data));
-  controller.addEventListener('selectend', () => onSelectEnd(data));
   controller.addEventListener('squeezestart', () => onSqueezeStart(data));
+  controller.addEventListener('squeezeend', () => onSqueezeEnd(data));
 
   // Hide the vendor controller model for hand input sources (gripSpace is
   // null for hands — the exact v1 bug the README warns about — and the model
@@ -88,38 +84,21 @@ export function raycastFromController(data) {
   _rayMat4.identity().extractRotation(data.controller.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(data.controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(_rayMat4);
-  const intersects = raycaster.intersectObjects(interactables, false);
+  const intersects = raycaster.intersectObjects(interactables.concat(placedTargets()), false);
   return intersects.length > 0 ? intersects[0] : null;
 }
 
 // ---------------------------------------------------------------------------
-// Trigger handlers: grab takes priority, else the interactive cube.
+// Squeeze (grip): pick up a placed part under the ray; release drops it.
+// Hands have a null gripSpace, so hands grab via the target-ray controller
+// object instead (see grabRootFor).
 // ---------------------------------------------------------------------------
-// The grab root differs by input type: controllers have a tracked grip
-// pose, but HAND input sources have a null gripSpace (their grip group never
-// updates), so hands must grab via the target-ray controller object instead —
-// otherwise held objects would freeze at the stale grip transform.
-function grabRootFor(data) {
-  return data.isHand ? data.controller : data.controllerGrip;
-}
-
-function onSelectStart(data) {
-  const hit = raycastFromController(data);
-  if (hit && tryGrab(grabRootFor(data), hit)) return;
-  if (hit && hit.object === cube) cycleCubeColor();
-}
-
-function onSelectEnd(data) {
-  releaseGrab(grabRootFor(data));
-  endCubeFlash();
-}
-
-// ---------------------------------------------------------------------------
-// Squeeze (grip): forwarded to locomotion for teleport confirmation.
-// ---------------------------------------------------------------------------
-export const squeezeCallbacks = { onSqueeze: null };
+export const squeezeCallbacks = { onSqueezeStart: null, onSqueezeEnd: null };
 function onSqueezeStart(data) {
-  if (squeezeCallbacks.onSqueeze) squeezeCallbacks.onSqueeze(data);
+  if (squeezeCallbacks.onSqueezeStart) squeezeCallbacks.onSqueezeStart(data);
+}
+function onSqueezeEnd(data) {
+  if (squeezeCallbacks.onSqueezeEnd) squeezeCallbacks.onSqueezeEnd(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,15 +132,22 @@ export function pollGamepads() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-frame hover highlight for the interactive cube.
+// Per-frame hover highlight for movable parts under the rays.
 // ---------------------------------------------------------------------------
 export function updateHover() {
-  let hovering = false;
   for (const data of controllerData) {
-    if (data && data.rayLine.visible) {
-      const hit = raycastFromController(data);
-      if (hit && hit.object === cube) { hovering = true; break; }
+    if (!data || !data.rayLine.visible) continue;
+    const hit = raycastFromController(data);
+    const target = hit && hit.object;
+    if (target && target.userData.movable && !target.userData.held) {
+      // Highlight grabbable parts via emissive so users know grip applies.
+      if (!target.userData.baseEmissive) {
+        target.userData.baseEmissive = target.material.emissive ? target.material.emissive.getHex() : 0;
+        if (target.material.emissive) target.material.emissive.setHex(0x113344);
+      }
+    } else if (target && target.userData.baseEmissive && !target.userData.held) {
+      if (target.material.emissive) target.material.emissive.setHex(target.userData.baseEmissive);
+      target.userData.baseEmissive = null;
     }
   }
-  setCubeHover(hovering);
 }

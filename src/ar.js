@@ -1,27 +1,59 @@
-// Immersive-AR passthrough mode for Quest 3: the camera feed replaces the
-// skybox/floor, and a reticle lets the user tap the trigger to place a
-// floating marker via the 'hit-test' feature.
+// Immersive-AR passthrough for Quest 3 (the app is AR-only): the camera feed
+// replaces the skybox/floor, a reticle previews where the trigger will place
+// a part, the menu chooses the shape, and the grip button picks up and moves
+// already-placed parts.
 //
-// Session differences vs VR (handled in main.js):
-//   - requestSession('immersive-ar', { requiredFeatures: ['hit-test'], ... })
-//   - scene.background must be null (transparent) so the camera feed shows
-//   - the skybox/floor/grid/pedestals are hidden; a "placement" reticle is
-//     shown instead
-// Locomotion stays available (teleport targets the invisible floor plane).
+// Session features: requiredFeatures ['hit-test', 'local-floor'],
+// optionalFeatures ['hand-tracking', 'dom-overlay'].
+//
+// Teleportation was removed with the VR mode; smooth locomotion (thumbstick)
+// remains available via src/locomotion.js.
 
 import * as THREE from 'three';
 import { renderer, scene, floor, sky, grid, pedestals } from './scene.js';
 
-let defaultBackground = null;
-export function captureDefaultBackground() {
-  defaultBackground = scene.background;
-}
-
 let hitTestSource = null;
 let hitTestSourceRequest = null;
 let reticle = null;
-let placedMarkers = [];
+let markerGeo = null;
+let previewMesh = null;
+let placedParts = [];
+let defaultBackground = null;
 
+// ---------------------------------------------------------------------------
+// Shape catalogue for placed parts. Shared geometries/materials keep draw
+// calls minimal; the menu cycles SHAPES[*].id.
+// ---------------------------------------------------------------------------
+export const SHAPES = [
+  { id: 'box', label: 'Box', make: () => new THREE.BoxGeometry(0.3, 0.3, 0.3), half: 0.15 },
+  { id: 'ball', label: 'Ball', make: () => new THREE.SphereGeometry(0.15, 24, 16), half: 0.15 },
+  { id: 'star', label: 'Star', make: () => new THREE.IcosahedronGeometry(0.18, 0), half: 0.15 },
+  { id: 'pillar', label: 'Pillar', make: () => new THREE.CylinderGeometry(0.1, 0.1, 0.6, 12), half: 0.3 },
+];
+let shapeIndex = 0;
+const shapeGeos = new Map();
+const partMaterials = [
+  new THREE.MeshStandardMaterial({ color: 0x53dded, roughness: 0.5 }),
+  new THREE.MeshStandardMaterial({ color: 0xff8c42, roughness: 0.5 }),
+  new THREE.MeshStandardMaterial({ color: 0xc77dff, roughness: 0.5 }),
+];
+
+export function getShapeIndex() { return shapeIndex; }
+export function cycleShape() {
+  shapeIndex = (shapeIndex + 1) % SHAPES.length;
+  return SHAPES[shapeIndex];
+}
+export function getShapeLabel() { return SHAPES[shapeIndex].label; }
+
+function shapeGeometry() {
+  const id = SHAPES[shapeIndex].id;
+  if (!shapeGeos.has(id)) shapeGeos.set(id, SHAPES[shapeIndex].make());
+  return shapeGeos.get(id);
+}
+
+// ---------------------------------------------------------------------------
+// Hit-test reticle + placement preview.
+// ---------------------------------------------------------------------------
 export function initAR() {
   if (!reticle) {
     reticle = new THREE.Mesh(
@@ -32,6 +64,10 @@ export function initAR() {
     reticle.visible = false;
   }
   return reticle;
+}
+
+export function captureDefaultBackground() {
+  defaultBackground = scene.background;
 }
 
 export async function startARHitTest(session) {
@@ -69,13 +105,18 @@ export function updateAR(frame) {
     if (pose) {
       reticle.visible = true;
       reticle.matrix.fromArray(pose.transform.matrix);
-      // Placement preview: a translucent ghost of the marker follows the
-      // reticle so you can see exactly where the block will land before
-      // pulling the trigger. Shares the marker geometry (one draw call more
-      // while aiming, nothing when idle).
+      // Placement preview: a translucent ghost of the current shape follows
+      // the reticle so you see exactly where the part will land before
+      // pulling the trigger.
       if (!previewMesh) {
-        previewMesh = new THREE.Mesh(
-          markerGeometry(),
+        previewMesh = new THREE.Group();
+        scene.add(previewMesh);
+      }
+      if (previewMesh.children.length === 0 || previewMesh.userData.shapeId !== SHAPES[shapeIndex].id) {
+        // Rebuild the ghost only when the selected shape changes.
+        previewMesh.clear();
+        const ghost = new THREE.Mesh(
+          shapeGeometry(),
           new THREE.MeshBasicMaterial({
             color: 0x53dded,
             transparent: true,
@@ -83,11 +124,12 @@ export function updateAR(frame) {
             depthWrite: false,
           })
         );
-        scene.add(previewMesh);
+        previewMesh.add(ghost);
+        previewMesh.userData.shapeId = SHAPES[shapeIndex].id;
       }
       previewMesh.visible = true;
       previewMesh.position.setFromMatrixPosition(reticle.matrix);
-      previewMesh.position.y += 0.15;
+      previewMesh.position.y += SHAPES[shapeIndex].half;
     }
   } else {
     reticle.visible = false;
@@ -95,26 +137,55 @@ export function updateAR(frame) {
   }
 }
 
-function markerGeometry() {
-  // Shared between preview and placed markers so geometry is uploaded once.
-  if (!markerGeo) markerGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-  return markerGeo;
-}
-let markerGeo = null;
-let previewMesh = null;
-
-export function placeMarker() {
-  if (!reticle || !reticle.visible) return;
+// ---------------------------------------------------------------------------
+// Placing parts (trigger).
+// ---------------------------------------------------------------------------
+export function placePart() {
+  if (!reticle || !reticle.visible) return null;
   const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-  const marker = new THREE.Mesh(
-    markerGeometry(),
-    new THREE.MeshStandardMaterial({ color: 0x53dded, roughness: 0.5 })
+  const shape = SHAPES[shapeIndex];
+  const part = new THREE.Mesh(
+    shapeGeometry(),
+    partMaterials[placedParts.length % partMaterials.length]
   );
-  marker.position.copy(pos).add(new THREE.Vector3(0, 0.15, 0));
-  scene.add(marker);
-  placedMarkers.push(marker);
+  part.userData.movable = true;
+  part.userData.half = shape.half;
+  part.position.copy(pos);
+  part.position.y += shape.half;
+  scene.add(part);
+  placedParts.push(part);
+  return part;
 }
 
+// ---------------------------------------------------------------------------
+// Moving parts (grip). The squeeze events route through here:
+//   gripStart(root) — attach the ray-hit part to the given grab root
+//                     (controller grip group, or the ray controller for hands)
+//   gripEnd(root)   — detach, leaving the part where it was released
+// ---------------------------------------------------------------------------
+// Placed parts, for raycast targeting (controllers.js).
+export function placedTargets() { return placedParts; }
+
+export function gripStart(grabRoot, hit) {
+  const part = hit && hit.object;
+  if (!part || !part.userData.movable || part.userData.held) return false;
+  grabRoot.attach(part);
+  part.userData.held = grabRoot;
+  return true;
+}
+
+export function gripEnd(grabRoot) {
+  for (const part of placedParts) {
+    if (part.userData.held === grabRoot) {
+      scene.attach(part);
+      part.userData.held = null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session environment transitions.
+// ---------------------------------------------------------------------------
 export function enterARVisuals() {
   scene.background = null; // transparent so the passthrough camera shows
   sky.visible = false;
@@ -129,15 +200,21 @@ export function exitARVisuals() {
   stopARHitTest();
   if (reticle) reticle.visible = false;
   if (previewMesh) previewMesh.visible = false;
-  for (const m of placedMarkers) scene.remove(m);
-  placedMarkers = [];
-  // Restore the VR environment (background must go back to opaque, or the
-  // desktop preview renders on transparent black after an AR session).
+  for (const p of placedParts) scene.remove(p);
+  placedParts = [];
+  // Restore the flat-preview environment (background must go back to opaque,
+  // or the desktop preview renders on transparent black after an AR session).
   scene.background = defaultBackground;
   sky.visible = true;
   floor.visible = true;
   grid.visible = true;
   for (const p of pedestals) p.visible = true;
+}
+
+// Remove all placed parts (menu "Clear parts").
+export function clearParts() {
+  for (const p of placedParts) scene.remove(p);
+  placedParts = [];
 }
 
 export function isARActive() {
