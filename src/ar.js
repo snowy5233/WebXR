@@ -59,6 +59,7 @@ export function updateAR(frame) {
   if (!reticle) return;
   if (!hitTestSource) {
     reticle.visible = false;
+    if (previewMesh) previewMesh.visible = false;
     return;
   }
   const refSpace = renderer.xr.getReferenceSpace();
@@ -68,17 +69,45 @@ export function updateAR(frame) {
     if (pose) {
       reticle.visible = true;
       reticle.matrix.fromArray(pose.transform.matrix);
+      // Placement preview: a translucent ghost of the marker follows the
+      // reticle so you can see exactly where the block will land before
+      // pulling the trigger. Shares the marker geometry (one draw call more
+      // while aiming, nothing when idle).
+      if (!previewMesh) {
+        previewMesh = new THREE.Mesh(
+          markerGeometry(),
+          new THREE.MeshBasicMaterial({
+            color: 0x53dded,
+            transparent: true,
+            opacity: 0.4,
+            depthWrite: false,
+          })
+        );
+        scene.add(previewMesh);
+      }
+      previewMesh.visible = true;
+      previewMesh.position.setFromMatrixPosition(reticle.matrix);
+      previewMesh.position.y += 0.15;
     }
   } else {
     reticle.visible = false;
+    if (previewMesh) previewMesh.visible = false;
   }
 }
+
+function markerGeometry() {
+  // Shared between preview and placed markers so geometry is uploaded once.
+  if (!markerGeo) markerGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+  return markerGeo;
+}
+let markerGeo = null;
+let previewMesh = null;
 
 export function placeMarker() {
   if (!reticle || !reticle.visible) return;
   const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
   const marker = new THREE.Mesh(
-    new THREE.BoxGeometry(0.3, 0.3, 0.3),
+    markerGeometry(),
     new THREE.MeshStandardMaterial({ color: 0x53dded, roughness: 0.5 })
   );
   marker.position.copy(pos).add(new THREE.Vector3(0, 0.15, 0));
@@ -99,6 +128,7 @@ export function enterARVisuals() {
 export function exitARVisuals() {
   stopARHitTest();
   if (reticle) reticle.visible = false;
+  if (previewMesh) previewMesh.visible = false;
   for (const m of placedMarkers) scene.remove(m);
   placedMarkers = [];
   // Restore the VR environment (background must go back to opaque, or the

@@ -179,9 +179,11 @@ async function onSessionStarted(session, mode) {
 
   if (mode === 'immersive-ar') {
     // AR passthrough: transparent background, hide the VR environment, start
-    // hit-testing for the placement reticle.
+    // hit-testing for the placement reticle. Teleport is disabled in AR, so
+    // pin the session to smooth locomotion from the start.
     enterARVisuals();
     startARHitTest(session);
+    setLocomotionMode(LOCOMOTION_SMOOTH);
   }
 
   resetGrabbables();
@@ -218,6 +220,9 @@ function onSessionEnded() {
 // ---------------------------------------------------------------------------
 inputCallbacks.onAButton = () => toggleMenu();
 inputCallbacks.onBButton = () => {
+  // Teleport is disabled in AR (it only shifts virtual content relative to
+  // the real room), so in AR keep the mode pinned to smooth.
+  if (isARActive()) return;
   setLocomotionMode(getLocomotionMode() === LOCOMOTION_TELEPORT ? LOCOMOTION_SMOOTH : LOCOMOTION_TELEPORT);
   console.log('[locomotion] mode ->', getLocomotionMode());
 };

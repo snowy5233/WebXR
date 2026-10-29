@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { renderer, camera, scene, floor } from './scene.js';
 import { controllerData, gamepadState } from './controllers.js';
+import { isARActive } from './ar.js';
 
 const LOCOMOTION_TELEPORT = 'teleport';
 const LOCOMOTION_SMOOTH = 'smooth';
@@ -210,7 +211,16 @@ export function updateLocomotion(dt) {
     camera.add(vignette);
   }
 
-  if (locomotionMode === LOCOMOTION_TELEPORT) {
+  // In AR, teleport is disabled: it only shifts the virtual content relative
+  // to the passthrough room (no bounded floor to land on), which is useless
+  // and disorienting. AR sessions are forced to smooth mode on entry (see
+  // main.js), so this is a belt-and-suspenders guard in case the mode is
+  // toggled while in AR.
+  if (locomotionMode === LOCOMOTION_TELEPORT && isARActive()) {
+    teleportArc.visible = false;
+    teleportRing.visible = false;
+    vignetteIntensity = 0;
+  } else if (locomotionMode === LOCOMOTION_TELEPORT) {
     let aim = null;
     for (const data of controllerData) {
       if (data && data.controllerGrip.visible) {
@@ -271,6 +281,7 @@ export function updateLocomotion(dt) {
 // Called by controllers.js squeeze dispatch: confirm teleport with grip.
 export function handleSqueeze(data) {
   if (locomotionMode !== LOCOMOTION_TELEPORT) return;
+  if (isARActive()) return; // teleport disabled in AR (see updateLocomotion)
   const p = updateTeleportAim(data);
   if (p) teleportTo(p.x, p.z);
 }
