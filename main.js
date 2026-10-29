@@ -6,9 +6,13 @@
 // so it can apply the headset pose and projection each frame.
 //
 // Session feature requests:
-//   VR: optionalFeatures ['local-floor', 'bounded-floor', 'hand-tracking']
+//   VR: optionalFeatures ['local-floor', 'bounded-floor']
 //   AR: requiredFeatures ['hit-test', 'local-floor'],
 //       optionalFeatures ['hand-tracking', 'dom-overlay']
+//
+// NOTE: 'hand-tracking' is NOT requested for VR — on the Quest 3 browser it
+// stalls requestSession indefinitely (see startSession). If the runtime
+// still exposes hand input sources, controllers.js/hands.js handle them.
 //
 // hand-tracking IS requested now (unlike v1): hands are handled via
 // renderer.xr.getHand() with their own visual (hands.js), and the controller
@@ -133,7 +137,12 @@ async function startSession(mode) {
     } else {
       session = await withTimeout(
         navigator.xr.requestSession('immersive-vr', {
-          optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+          // Keep the VR request to the known-good v1 feature set. Requesting
+      // 'hand-tracking' here stalled requestSession indefinitely on the
+      // Quest 3 browser (the runtime appears to wait on the hand-tracking
+      // permission/switch flow before resolving). Hands are still supported:
+      // if the runtime reports hand sources anyway, hands.js handles them.
+      optionalFeatures: ['local-floor', 'bounded-floor'],
         }),
         'requestSession'
       );
