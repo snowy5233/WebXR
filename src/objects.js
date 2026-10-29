@@ -89,11 +89,13 @@ export function initGrabbables() {
     mesh.position.set(...spec.pos);
     mesh.castShadow = false;
     mesh.userData.grabbable = true;
-    // Start asleep; gravity wakes them when thrown/dropped.
+    // Start asleep; gravity wakes them when thrown/dropped. halfHeight is
+    // the floor-contact offset (half the object's height per shape).
+    const halfHeights = { box: 0.11, ball: 0.13, star: 0.16 };
     mesh.userData.body = {
       velocity: new THREE.Vector3(),
       angular: new THREE.Vector3(),
-      halfHeight: 0.13,
+      halfHeight: halfHeights[spec.geo],
       held: null,
       sleeping: true,
     };

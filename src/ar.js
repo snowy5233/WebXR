@@ -35,11 +35,16 @@ export function initAR() {
 }
 
 export async function startARHitTest(session) {
-  const viewerSpace = await session.requestReferenceSpace('viewer');
-  hitTestSourceRequest = session.requestHitTestSource({ space: viewerSpace });
-  hitTestSourceRequest
-    .then((source) => { hitTestSource = source; })
-    .catch((err) => console.warn('[AR] hit test source failed:', err));
+  try {
+    const viewerSpace = await session.requestReferenceSpace('viewer');
+    hitTestSourceRequest = session.requestHitTestSource({ space: viewerSpace });
+    hitTestSourceRequest
+      .then((source) => { hitTestSource = source; })
+      .catch((err) => console.warn('[AR] hit test source failed:', err));
+  } catch (err) {
+    // Not fatal: AR still works, just without the placement reticle.
+    console.warn('[AR] hit-test setup failed:', err);
+  }
 }
 
 export function stopARHitTest() {

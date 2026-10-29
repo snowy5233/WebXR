@@ -20,8 +20,9 @@
 // v1 "frozen model" bug can no longer occur.
 
 import * as THREE from 'three';
-import { renderer, scene, camera, controls, onResize } from './src/scene.js';
+import { renderer, scene, camera, controls } from './src/scene.js';
 import { installGlobalErrorHandlers, setDebugText } from './src/debug.js';
+import { showDiagnostics, hideDiagnostics, updateDiagnostics, reportLoopError } from './src/diagnostics.js';
 import { controllerData, pollGamepads, inputCallbacks, squeezeCallbacks, updateHover } from './src/controllers.js';
 import { setupHands } from './src/hands.js';
 import {
@@ -30,7 +31,7 @@ import {
   updateLocomotion, handleSqueeze, resetLocomotionVisuals, getPlayerOffset,
 } from './src/locomotion.js';
 import { cube, updatePhysics, resetGrabbables, anyGrabbedBy } from './src/objects.js';
-import { toggleMenu, isMenuOpen, closeMenu, updateMenu } from './src/menu.js';
+import { toggleMenu, closeMenu, updateMenu } from './src/menu.js';
 import { startARHitTest, updateAR, placeMarker, enterARVisuals, exitARVisuals, isARActive, captureDefaultBackground } from './src/ar.js';
 
 installGlobalErrorHandlers();
@@ -185,6 +186,9 @@ async function onSessionStarted(session, mode) {
 
   resetGrabbables();
   overlay.classList.add('hidden');
+  // In-world status panel: shows session state, and crucially any per-frame
+  // error, readable INSIDE the headset (the DOM overlay is invisible there).
+  showDiagnostics(mode === 'immersive-ar' ? 'AR ready. Trigger places markers.' : 'VR ready. Trigger grabs; A/X menu.');
   setStatus(mode === 'immersive-ar'
     ? 'In AR. Trigger places a marker on real surfaces.'
     : 'In VR. Trigger grabs objects / cycles the cube; A/X opens the menu.');
@@ -200,6 +204,7 @@ function onSessionEnded() {
   resetLocomotionVisuals();
   exitARVisuals();
   closeMenu();
+  hideDiagnostics();
   resetGrabbables();
   controls.enabled = true;
   controls.update();
@@ -235,22 +240,37 @@ for (const data of controllerData) {
 // ---------------------------------------------------------------------------
 // Render loop.
 // ---------------------------------------------------------------------------
+// Isolate each XR subsystem in its own try/catch: a throw in one subsystem
+// must NEVER skip renderer.render() — in XR that submits no frame to the
+// compositor and the headset shows a permanent BLACK SCREEN. Errors are
+// reported to the in-world diagnostics panel (readable in-headset) and the
+// console; rendering always continues.
+function tryStep(label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[animate/${label} threw]`, err);
+    reportLoopError(`${label}: ${err && err.message ? err.message : err}`);
+  }
+}
+
 function animate(timestamp, frame) {
   const dt = Math.min(0.05, (timestamp - (lastTimestamp || timestamp)) / 1000);
   lastTimestamp = timestamp;
 
   const isPresenting = renderer.xr.isPresenting;
-  if (!isPresenting) controls.update();
-  cube.rotation.y += 0.005;
+  if (!isPresenting) tryStep('controls', () => controls.update());
+  tryStep('cube', () => { cube.rotation.y += 0.005; });
 
   if (isPresenting) {
-    pollGamepads();
-    updateLocomotion(dt);
-    updateAR(frame);
-    updateMenu(controllerData, selectPresses);
+    tryStep('gamepads', () => pollGamepads());
+    tryStep('locomotion', () => updateLocomotion(dt));
+    tryStep('ar', () => updateAR(frame));
+    tryStep('menu', () => updateMenu(controllerData, selectPresses));
+    tryStep('diagPanel', () => updateDiagnostics());
   }
-  updateHover();
-  updatePhysics(dt);
+  tryStep('hover', () => updateHover());
+  tryStep('physics', () => updatePhysics(dt));
 
   if (isPresenting && !loggedFirstXRFrame) {
     loggedFirstXRFrame = true;
@@ -279,8 +299,6 @@ function animate(timestamp, frame) {
     lastConsoleDiag = timestamp;
     console.log('[diag]', dbgLines.join(' | '));
   }
-
-  renderer.render(scene, camera);
 }
 
 function safeAnimate(timestamp, frame) {
@@ -289,6 +307,15 @@ function safeAnimate(timestamp, frame) {
   } catch (err) {
     console.error('[animate threw]', err);
     setDebugText('animate ERROR: ' + (err && err.message ? err.message : err));
+    reportLoopError(err && err.message ? err.message : String(err));
+  }
+  // ABSOLUTE INVARIANT: always submit a frame. A skipped render in XR is a
+  // black screen in the headset.
+  try {
+    renderer.render(scene, camera);
+  } catch (err) {
+    console.error('[render threw]', err);
+    setDebugText('render ERROR: ' + (err && err.message ? err.message : err));
   }
 }
 renderer.setAnimationLoop(safeAnimate);
