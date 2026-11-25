@@ -47,11 +47,8 @@ function setupController(index) {
   controller.add(rayLine);
   scene.add(controller);
 
-  const data = { controller, controllerGrip, rayLine, model, index, handMesh: null, isHand: false };
+  const data = { controller, controllerGrip, rayLine, model, index, isHand: false };
   controllerData[index] = data;
-
-  controller.addEventListener('squeezestart', () => onSqueezeStart(data));
-  controller.addEventListener('squeezeend', () => onSqueezeEnd(data));
 
   // Hide the vendor controller model for hand input sources (gripSpace is
   // null for hands — the exact v1 bug the README warns about — and the model
@@ -63,8 +60,10 @@ function setupController(index) {
       model.visible = false;
     } else {
       model.visible = true;
-      data.rayLine.visible = true;
     }
+    // Show the ray for hands too: hands use the same target-ray controller
+    // object for select/grab, so the ray must be visible for aiming UI.
+    data.rayLine.visible = true;
   });
   controller.addEventListener('disconnected', () => {
     data.rayLine.visible = false;
@@ -84,21 +83,8 @@ export function raycastFromController(data) {
   _rayMat4.identity().extractRotation(data.controller.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(data.controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(_rayMat4);
-  const intersects = raycaster.intersectObjects(interactables.concat(placedTargets()), false);
+  const intersects = raycaster.intersectObjects(placedTargets(), false);
   return intersects.length > 0 ? intersects[0] : null;
-}
-
-// ---------------------------------------------------------------------------
-// Squeeze (grip): pick up a placed part under the ray; release drops it.
-// Hands have a null gripSpace, so hands grab via the target-ray controller
-// object instead (see grabRootFor).
-// ---------------------------------------------------------------------------
-export const squeezeCallbacks = { onSqueezeStart: null, onSqueezeEnd: null };
-function onSqueezeStart(data) {
-  if (squeezeCallbacks.onSqueezeStart) squeezeCallbacks.onSqueezeStart(data);
-}
-function onSqueezeEnd(data) {
-  if (squeezeCallbacks.onSqueezeEnd) squeezeCallbacks.onSqueezeEnd(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,9 +106,10 @@ export function pollGamepads() {
     const idx = src.handedness === 'right' ? 0 : 1;
     gamepadState[idx] = src.gamepad;
     if (src.handedness === 'right') {
-      // Quest Touch button indices: 2 = A/X, 3 = B/Y.
-      if (src.gamepad.buttons.length > 2 && src.gamepad.buttons[2].pressed) aDown = true;
-      if (src.gamepad.buttons.length > 3 && src.gamepad.buttons[3].pressed) bDown = true;
+      // xr-standard gamepad mapping: 0 = trigger, 1 = squeeze,
+      // 2 = touchpad, 3 = thumbstick, 4 = A/X, 5 = B/Y.
+      if (src.gamepad.buttons.length > 4 && src.gamepad.buttons[4].pressed) aDown = true;
+      if (src.gamepad.buttons.length > 5 && src.gamepad.buttons[5].pressed) bDown = true;
     }
   }
   if (aDown && !aWasDown && inputCallbacks.onAButton) inputCallbacks.onAButton();

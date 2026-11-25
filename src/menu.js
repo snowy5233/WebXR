@@ -143,7 +143,7 @@ export function updateMenu(controllerDatas, selectPresses) {
   // selectPresses: array of controller data entries whose trigger was pressed
   // this frame (main.js collects the selectstart events).
   let newHover = -1;
-  let clickedData = null;
+  let clicked = false;
   for (const data of controllerDatas) {
     if (!data || !data.rayLine.visible) continue;
     const hit = menuRaycast(data);
@@ -152,7 +152,7 @@ export function updateMenu(controllerDatas, selectPresses) {
     panel.worldToLocal(_hit.copy(hit.point));
     const row = rowHit(_hit.y);
     if (row >= 0) newHover = row;
-    if (row >= 0 && selectPresses && selectPresses.has(data)) clickedData = data;
+    if (row >= 0 && selectPresses && selectPresses.has(data)) clicked = true;
   }
   hoveredRow = newHover;
   // Only redraw the canvas texture when the hover actually changed (or a
@@ -161,10 +161,10 @@ export function updateMenu(controllerDatas, selectPresses) {
     drawPanel();
     lastDrawnHover = hoveredRow;
   }
-  if (clickedData) {
+  if (clicked) {
     activateRow(hoveredRow);
-    // A click can change a row label (locomotion toggle) — redraw and mark
-    // the state as current so the hover check above doesn't skip it.
+    // A click can change a row label — redraw and mark the state as current
+    // so the hover check above doesn't skip it.
     drawPanel();
     lastDrawnHover = hoveredRow;
   }
